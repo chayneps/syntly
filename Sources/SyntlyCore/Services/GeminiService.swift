@@ -416,6 +416,17 @@ public final class GeminiService {
 
         guard (200...299).contains(http.statusCode) else {
             let bodyText = String(data: data, encoding: .utf8) ?? "Unknown error"
+            if let errJson = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let errObj = errJson["error"] as? [String: Any],
+               let errMsg = errObj["message"] as? String {
+                if http.statusCode == 403 && errMsg.contains("has not been used in project") {
+                    throw GeminiServiceError.httpError(
+                        statusCode: 403,
+                        message: "Gemini API is not enabled on this Google project. Enable it at:\nhttps://console.developers.google.com/apis/api/generativelanguage.googleapis.com/overview\n\nOr create a key with 'Create API key in new project' at Google AI Studio."
+                    )
+                }
+                throw GeminiServiceError.httpError(statusCode: http.statusCode, message: errMsg)
+            }
             throw GeminiServiceError.httpError(statusCode: http.statusCode, message: bodyText)
         }
 
