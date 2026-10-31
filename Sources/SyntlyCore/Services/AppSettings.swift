@@ -78,8 +78,8 @@ public final class AppSettings: ObservableObject {
     ]
 
     public init() {
-        let modeStr = defaults.string(forKey: Keys.authMode) ?? AuthProviderMode.auto.rawValue
-        self.authMode = AuthProviderMode(rawValue: modeStr) ?? .auto
+        let modeStr = defaults.string(forKey: Keys.authMode) ?? AuthProviderMode.apiKey.rawValue
+        self.authMode = AuthProviderMode(rawValue: modeStr) ?? .apiKey
 
         let dialectStr = defaults.string(forKey: Keys.dialect) ?? EnglishDialect.us.rawValue
         self.dialect = EnglishDialect(rawValue: dialectStr) ?? .us

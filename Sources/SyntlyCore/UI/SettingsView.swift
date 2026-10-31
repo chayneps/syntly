@@ -81,6 +81,75 @@ public struct SettingsView: View {
                 }
             }
 
+            // Gemini Connection Banner
+            if !settings.hasStoredAPIKey {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "key.fill")
+                            .font(.title3)
+                            .foregroundStyle(.blue)
+                            .padding(.top, 2)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Connect Your Google Account ($0 Free)")
+                                .font(.subheadline.bold())
+                            Text("Google gives every Google Account a free Gemini API key with zero credit card required.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            HStack(spacing: 8) {
+                                Button {
+                                    if let url = URL(string: "https://aistudio.google.com/apikey") {
+                                        NSWorkspace.shared.open(url)
+                                    }
+                                } label: {
+                                    Label("1. Get Free Key ↗", systemImage: "arrow.up.right.square")
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+
+                                SecureField("2. Paste your Gemini API key here", text: $settings.apiKeyInput)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(minWidth: 200)
+
+                                Button("Connect") {
+                                    settings.saveAPIKeyFromInput()
+                                    GeminiService.shared.clearCache()
+                                    runPlaygroundCheck()
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                                .disabled(settings.apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            }
+                            .padding(.top, 4)
+                        }
+                    }
+                }
+                .padding(10)
+                .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(Color.blue.opacity(0.25), lineWidth: 1)
+                )
+            } else {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                    Text("Connected to Google Gemini (\(settings.liveModel))")
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Change Key") {
+                        settings.clearAPIKey()
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.green.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+            }
+
             HSplitView {
                 // Left: Editable text editor
                 VStack(alignment: .leading, spacing: 8) {
@@ -202,11 +271,19 @@ public struct SettingsView: View {
             playgroundIssues = []
             return
         }
+
+        let local = GeminiService.shared.runLocalSpellcheck(on: text)
+        guard settings.hasStoredAPIKey else {
+            playgroundIssues = local
+            playgroundError = "Please connect your free Google Gemini API key above to enable AI grammar and rewrite checks."
+            isCheckingPlayground = false
+            return
+        }
+
         isCheckingPlayground = true
         playgroundError = nil
 
         Task {
-            let local = GeminiService.shared.runLocalSpellcheck(on: text)
             do {
                 let ai = try await GeminiService.shared.proofread(text: text)
                 var merged = ai
@@ -229,6 +306,12 @@ public struct SettingsView: View {
 
     private func runPlaygroundRewrite(_ preset: RewritePreset) {
         let text = playgroundText
+        guard settings.hasStoredAPIKey else {
+            playgroundError = "Please connect your free Google Gemini API key above to enable AI rewrites."
+            isCheckingPlayground = false
+            return
+        }
+
         isCheckingPlayground = true
         playgroundError = nil
         Task {

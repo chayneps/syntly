@@ -9,8 +9,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var settingsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        floatingPanelController = FloatingPanelController(coordinator: coordinator)
-        coordinator.start()
+        let isSandboxOnly = CommandLine.arguments.contains("--sandbox") || CommandLine.arguments.contains("--sandbox-only")
+
+        if !isSandboxOnly {
+            floatingPanelController = FloatingPanelController(coordinator: coordinator)
+            coordinator.start()
+        } else {
+            print("🛡️ Syntly running in SAFE SANDBOX MODE:")
+            print("   • macOS Accessibility monitoring is COMPLETELY DISABLED.")
+            print("   • Global hotkey listeners are COMPLETELY DISABLED.")
+            print("   • Zero access to external apps or keystrokes.")
+            print("   • Use the Live Playground window to test corrections safely.")
+        }
 
         // Show the Playground & Settings window on launch so the user can test immediately
         openSettingsWindow()

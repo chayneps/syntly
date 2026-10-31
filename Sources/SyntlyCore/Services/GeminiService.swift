@@ -11,7 +11,7 @@ public enum GeminiServiceError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .noAuthenticationAvailable:
-            return "No Gemini authentication found. Sign in with `gemini` CLI in Terminal or add a free Google AI Studio API Key in Settings."
+            return "Please connect your free Google Gemini API key above to start checking your writing."
         case .invalidResponse(let detail):
             return "Could not parse Gemini response: \(detail)"
         case .httpError(let code, let msg):
@@ -344,17 +344,8 @@ public final class GeminiService {
             return try await callGeminiCLI(prompt: prompt, model: model, binaryPath: path)
 
         case .auto:
-            if let key = apiKey {
-                do {
-                    return try await callDirectREST(prompt: prompt, model: model, apiKey: key, isProofreadSchema: isProofreadSchema)
-                } catch {
-                    if let path = cliPath {
-                        return try await callGeminiCLI(prompt: prompt, model: model, binaryPath: path)
-                    }
-                    throw error
-                }
-            } else if let path = cliPath {
-                return try await callGeminiCLI(prompt: prompt, model: model, binaryPath: path)
+            if let key = apiKey, !key.isEmpty {
+                return try await callDirectREST(prompt: prompt, model: model, apiKey: key, isProofreadSchema: isProofreadSchema)
             } else {
                 throw GeminiServiceError.noAuthenticationAvailable
             }
