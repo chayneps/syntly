@@ -44,7 +44,9 @@ public struct SettingsView: View {
         .frame(width: 680, height: 500)
         .onAppear {
             settings.refreshAuthStatus()
-            runPlaygroundCheck()
+            DispatchQueue.main.async {
+                runPlaygroundCheck()
+            }
         }
     }
 
@@ -159,6 +161,7 @@ public struct SettingsView: View {
                 // Left: Editable text editor
                 VStack(alignment: .leading, spacing: 8) {
                     TextEditor(text: $playgroundText)
+                        .disableWritingToolsIfAvailable()
                         .font(.system(size: 14))
                         .padding(8)
                         .background(Color(NSColor.textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
@@ -547,5 +550,16 @@ public struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func disableWritingToolsIfAvailable() -> some View {
+        if #available(macOS 15.0, *) {
+            self.writingToolsBehavior(.disabled)
+        } else {
+            self
+        }
     }
 }

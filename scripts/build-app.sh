@@ -47,6 +47,8 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" <<EOF
     <true/>
     <key>NSQuitAlwaysKeepsWindows</key>
     <false/>
+    <key>NSWritingToolsDisabled</key>
+    <true/>
 </dict>
 </plist>
 EOF
