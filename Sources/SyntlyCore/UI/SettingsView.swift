@@ -98,11 +98,7 @@ public struct SettingsView: View {
                                 .foregroundStyle(.secondary)
 
                             HStack(spacing: 8) {
-                                Button {
-                                    if let url = URL(string: "https://aistudio.google.com/apikey") {
-                                        NSWorkspace.shared.open(url)
-                                    }
-                                } label: {
+                                Link(destination: URL(string: "https://aistudio.google.com/apikey")!) {
                                     Label("1. Get Free Key ↗", systemImage: "arrow.up.right.square")
                                 }
                                 .buttonStyle(.borderedProminent)
@@ -400,12 +396,7 @@ public struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Button("Get Free Key at Google AI Studio ↗") {
-                            if let url = URL(string: "https://aistudio.google.com/apikey") {
-                                NSWorkspace.shared.open(url)
-                            }
-                        }
-                        .buttonStyle(.link)
+                        Link("Get Free Key at Google AI Studio ↗", destination: URL(string: "https://aistudio.google.com/apikey")!)
                         .font(.caption)
                     }
                 }
