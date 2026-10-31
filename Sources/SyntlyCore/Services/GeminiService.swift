@@ -367,7 +367,8 @@ public final class GeminiService {
 
         var generationConfig: [String: Any] = [
             "temperature": 0.1,
-            "responseMimeType": "application/json"
+            "responseMimeType": "application/json",
+            "thinkingConfig": ["thinkingBudget": 0]
         ]
 
         if isProofreadSchema {

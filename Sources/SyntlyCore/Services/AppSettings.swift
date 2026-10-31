@@ -143,6 +143,9 @@ public final class AppSettings: ObservableObject {
     }
 
     public func activeAPIKey() -> String? {
+        if !apiKeyInput.isEmpty {
+            return apiKeyInput
+        }
         if let key = KeychainHelper.loadAPIKey(), !key.isEmpty {
             return key
         }

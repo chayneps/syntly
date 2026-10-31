@@ -68,7 +68,7 @@ public final class AXEngine {
     // MARK: - Lifecycle & Permissions
 
     public func start() {
-        checkTrust(prompt: false)
+        checkTrust(prompt: true)
         setupWorkspaceNotifications()
         startTrustPolling()
 
