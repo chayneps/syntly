@@ -34,8 +34,8 @@ public final class StatusBarController: NSObject {
         let icon = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "Syntly")?.withSymbolConfiguration(config)
         icon?.isTemplate = true
         button.image = icon
-        button.imagePosition = .imageLeading
-        button.title = " Syntly"
+        button.title = "" // Compact 22px width so it fits next to the MacBook camera notch
+        button.toolTip = "Syntly Writing Assistant"
         button.action = #selector(togglePopover(_:))
         button.target = self
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -82,13 +82,9 @@ public final class StatusBarController: NSObject {
 
         coordinator.$isAccessibilityTrusted
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] trusted in
-                guard let self = self, let button = self.statusItem?.button else { return }
-                if !trusted {
-                    button.title = " Syntly ⚠️"
-                } else {
-                    self.updateStatusButton(state: self.coordinator.pillState)
-                }
+            .sink { [weak self] _ in
+                guard let self = self else { return }
+                self.updateStatusButton(state: self.coordinator.pillState)
             }
             .store(in: &cancellables)
     }
@@ -96,22 +92,36 @@ public final class StatusBarController: NSObject {
     private func updateStatusButton(state: PillVisualState) {
         guard let button = statusItem?.button else { return }
 
+        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+
         if !coordinator.isAccessibilityTrusted {
-            button.title = " Syntly ⚠️"
+            let warnIcon = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: "Syntly Permission Needed")?.withSymbolConfiguration(config)
+            button.image = warnIcon
+            button.toolTip = "Syntly: Accessibility Permission Needed (Click to Grant)"
             return
         }
 
         switch state {
         case .issuesFound(let count, _):
-            button.title = " Syntly (\(count))"
+            let starIcon = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "Syntly Issues")?.withSymbolConfiguration(config)
+            button.image = starIcon
+            button.toolTip = "Syntly: \(count) issue\(count == 1 ? "" : "s") found"
         case .checking:
-            button.title = " Syntly…"
+            let checkIcon = NSImage(systemSymbolName: "ellipsis.bubble", accessibilityDescription: "Checking")?.withSymbolConfiguration(config)
+            button.image = checkIcon
+            button.toolTip = "Syntly: Checking writing…"
         case .error:
-            button.title = " Syntly (!)"
+            let errIcon = NSImage(systemSymbolName: "exclamationmark.bubble", accessibilityDescription: "Error")?.withSymbolConfiguration(config)
+            button.image = errIcon
+            button.toolTip = "Syntly: Error"
         case .paused:
-            button.title = " Syntly (Paused)"
+            let pauseIcon = NSImage(systemSymbolName: "pause.circle", accessibilityDescription: "Paused")?.withSymbolConfiguration(config)
+            button.image = pauseIcon
+            button.toolTip = "Syntly: Paused"
         case .allClear:
-            button.title = " Syntly"
+            let normalIcon = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "Syntly All Clear")?.withSymbolConfiguration(config)
+            button.image = normalIcon
+            button.toolTip = "Syntly: All Clear"
         }
     }
 
