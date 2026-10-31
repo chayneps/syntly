@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let coordinator = WritingAssistantCoordinator.shared
     var floatingPanelController: FloatingPanelController?
     var statusBarController: StatusBarController?
+    var mainWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -27,54 +28,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusBarController = StatusBarController(
             coordinator: coordinator,
             settings: .shared,
-            onOpenSettings: {
-                NSApp.activate(ignoringOtherApps: true)
-                for window in NSApp.windows where window.canBecomeMain {
-                    window.makeKeyAndOrderFront(nil)
-                }
+            onOpenSettings: { [weak self] in
+                self?.openMainWindow()
             }
         )
+
+        // Always show the main window immediately on launch
+        openMainWindow()
 
         if CommandLine.arguments.contains("--demo-pill") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 self.coordinator.simulateDemoPillOnScreen()
             }
         }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            NSApp.activate(ignoringOtherApps: true)
-            for window in NSApp.windows where window.canBecomeMain {
-                window.makeKeyAndOrderFront(nil)
-            }
-        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag {
-            for window in sender.windows where window.canBecomeMain {
-                window.makeKeyAndOrderFront(nil)
-            }
-        }
-        NSApp.activate(ignoringOtherApps: true)
+        openMainWindow()
         return true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         coordinator.stop()
     }
+
+    func openMainWindow() {
+        if let win = mainWindow {
+            win.makeKeyAndOrderFront(nil)
+            win.orderFrontRegardless()
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let contentView = SettingsView(coordinator: coordinator, settings: .shared)
+        let hostingController = NSHostingController(rootView: contentView)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 540),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Syntly — Real-Time Gemini Writing Assistant"
+        window.contentViewController = hostingController
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
+        self.mainWindow = window
+    }
 }
 
 @main
 struct SyntlyMainApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @StateObject private var coordinator = WritingAssistantCoordinator.shared
-    @StateObject private var settings = AppSettings.shared
 
     var body: some Scene {
-        WindowGroup("Syntly — Real-Time Gemini Writing Assistant") {
-            SettingsView(coordinator: coordinator, settings: settings)
-                .frame(minWidth: 720, minHeight: 540)
+        Settings {
+            SettingsView(coordinator: appDelegate.coordinator, settings: .shared)
         }
-        .windowResizability(.contentSize)
     }
 }

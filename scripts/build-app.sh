@@ -43,12 +43,12 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" <<EOF
     <false/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSWritingToolsDisabled</key>
+    <true/>
     <key>ApplePersistenceIgnoreState</key>
     <true/>
     <key>NSQuitAlwaysKeepsWindows</key>
     <false/>
-    <key>NSWritingToolsDisabled</key>
-    <true/>
 </dict>
 </plist>
 EOF

@@ -15,15 +15,18 @@ public final class FloatingPanelController {
 
     public init(coordinator: WritingAssistantCoordinator) {
         self.coordinator = coordinator
-        setupPanel()
 
         coordinator.onOverlayStateChanged = { [weak self] in
             self?.syncPanelVisibilityAndFrame()
         }
     }
 
-    private func setupPanel() {
-        let initialRect = NSRect(x: 200, y: 200, width: 380, height: 48)
+    private func getOrCreatePanel() -> NonActivatingPanel {
+        if let existing = self.panel {
+            return existing
+        }
+
+        let initialRect = NSRect(x: 200, y: 200, width: 150, height: 44)
         let newPanel = NonActivatingPanel(
             contentRect: initialRect,
             styleMask: [.nonactivatingPanel, .borderless],
@@ -40,37 +43,37 @@ public final class FloatingPanelController {
         newPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
 
         let rootView = FloatingOverlayView(coordinator: coordinator)
-        let hostingView = NSHostingView(rootView: rootView)
-        hostingView.frame = initialRect
-        newPanel.contentView = hostingView
+        let hostingController = NSHostingController(rootView: rootView)
+        newPanel.contentViewController = hostingController
 
         self.panel = newPanel
+        return newPanel
     }
 
     public func syncPanelVisibilityAndFrame() {
-        guard let panel = panel else { return }
-
         guard let context = coordinator.currentContext else {
             if !coordinator.isPopoverExpanded {
-                panel.orderOut(nil)
+                panel?.orderOut(nil)
             }
             return
         }
 
         // Hide if app is blocked and user hasn't manually opened the popover
         if coordinator.settings.isAppBlocked(bundleID: context.bundleID) && !coordinator.isPopoverExpanded {
-            panel.orderOut(nil)
+            panel?.orderOut(nil)
             return
         }
 
         // Hide if text field is completely empty and popover is collapsed
         if context.fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !coordinator.isPopoverExpanded {
-            panel.orderOut(nil)
+            panel?.orderOut(nil)
             return
         }
 
+        let panel = getOrCreatePanel()
+
         let targetSize: NSSize = coordinator.isPopoverExpanded
-            ? NSSize(width: 390, height: 360)
+            ? NSSize(width: 380, height: 348)
             : NSSize(width: 150, height: 44)
 
         let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)

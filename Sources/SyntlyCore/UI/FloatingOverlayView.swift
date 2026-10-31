@@ -21,6 +21,10 @@ public struct FloatingOverlayView: View {
                 compactPillView
             }
         }
+        .frame(
+            width: coordinator.isPopoverExpanded ? 380 : 150,
+            height: coordinator.isPopoverExpanded ? 348 : 44
+        )
     }
 
     // MARK: - Compact Corner Status Pill
@@ -49,7 +53,7 @@ public struct FloatingOverlayView: View {
             .buttonStyle(.plain)
             .help("Click to open Syntly suggestions (⌘⇧G) • Quick-accept top fix (⌥Tab)")
         }
-        .padding(4)
+        .frame(width: 150, height: 44)
     }
 
     @ViewBuilder
