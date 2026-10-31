@@ -62,6 +62,43 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         axEngine.openSystemAccessibilitySettings()
     }
 
+    public func simulateDemoPillOnScreen() {
+        let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let anchor = CGPoint(x: screen.midX + 100, y: screen.midY)
+        let demoContext = FocusedTextContext(
+            appName: "Demo Preview",
+            bundleID: "dev.syntly.demo",
+            pid: ProcessInfo.processInfo.processIdentifier,
+            fullText: "Hi team, their going to discuss about the launch tomorrow.",
+            selectedText: nil,
+            selectedRange: NSRange(location: 50, length: 0),
+            anchorAppKitPoint: anchor
+        )
+        self.currentContext = demoContext
+        self.issues = [
+            WritingIssue(
+                original: "their going",
+                replacement: "they're going",
+                category: .correctness,
+                explanation: "Use contraction they're instead of possessive their.",
+                utf16Location: 9,
+                utf16Length: 11,
+                isLocalSpellcheck: false
+            ),
+            WritingIssue(
+                original: "discuss about",
+                replacement: "discuss",
+                category: .fluency,
+                explanation: "Remove redundant preposition 'about'.",
+                utf16Location: 24,
+                utf16Length: 13,
+                isLocalSpellcheck: false
+            )
+        ]
+        self.pillState = .issuesFound(count: 2, topCategory: .correctness)
+        self.onOverlayStateChanged?()
+    }
+
     private func setupHotkeys() {
         hotkeyMonitor.onQuickAcceptShortcut = { [weak self] in
             guard let self = self, let topIssue = self.issues.first else { return }

@@ -35,6 +35,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         )
 
+        if CommandLine.arguments.contains("--demo-pill") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.coordinator.simulateDemoPillOnScreen()
+            }
+        }
+
         NSApp.activate(ignoringOtherApps: true)
     }
 

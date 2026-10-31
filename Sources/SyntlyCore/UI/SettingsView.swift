@@ -70,14 +70,23 @@ public struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Button {
-                        GeminiService.shared.clearCache()
-                        runPlaygroundCheck()
-                    } label: {
-                        Label("Check Now", systemImage: "sparkles")
+                    HStack(spacing: 8) {
+                        Button {
+                            coordinator.simulateDemoPillOnScreen()
+                        } label: {
+                            Label("Preview Floating Pill", systemImage: "sparkle.magnifyingglass")
+                        }
+                        .controlSize(.small)
+
+                        Button {
+                            GeminiService.shared.clearCache()
+                            runPlaygroundCheck()
+                        } label: {
+                            Label("Check Now", systemImage: "sparkles")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
                 }
             }
 

@@ -37,12 +37,12 @@ jobs:
           chmod +x scripts/build-app.sh
           ./scripts/build-app.sh
 
-      - name: Launch Syntly.app in Cloud VM & Capture Screenshot
+      - name: Launch Syntly with Floating Pill in Cloud VM & Capture Screenshot
         run: |
-          open Syntly.app
+          ./Syntly.app/Contents/MacOS/Syntly --demo-pill &
           sleep 4
           pgrep -fl Syntly || (echo "Syntly process did not start" && exit 1)
-          screencapture -x syntly-cloud-vm-screenshot.png || true
+          screencapture -x syntly-floating-pill-screenshot.png || true
           killall Syntly || true
 
       - name: Upload Cloud VM Screenshot & Syntly.app Artifact
@@ -51,7 +51,7 @@ jobs:
           name: Syntly-macOS-Cloud-VM-Output
           path: |
             Syntly.app
-            syntly-cloud-vm-screenshot.png
+            syntly-floating-pill-screenshot.png
           if-no-files-found: ignore
 
       - name: Interactive SSH into Disposable macOS VM (Optional)
