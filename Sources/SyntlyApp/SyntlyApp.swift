@@ -9,6 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var settingsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+
         let isSandboxOnly = CommandLine.arguments.contains("--sandbox") || CommandLine.arguments.contains("--sandbox-only")
 
         if !isSandboxOnly {
@@ -24,6 +26,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Show the Playground & Settings window on launch so the user can test immediately
         openSettingsWindow()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        openSettingsWindow()
+        return true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
