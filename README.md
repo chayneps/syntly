@@ -8,7 +8,7 @@
 
 - **Real-Time Corrections While You Type**:
   - Monitors focused text fields across native macOS apps, browsers, and Electron/Chromium apps (Slack, VS Code, Notion, Discord).
-  - Combines an **instant `<5ms` local spellcheck pass** (`NSSpellChecker`) with **debounced contextual Gemini checks** (`gemini-3.5-flash-lite` / `gemini-3.8-flash`) and `SHA-256` paragraph caching.
+  - Combines an **instant `<5ms` local spellcheck pass** (`NSSpellChecker`) with **debounced contextual Gemini checks** (defaulting to the flagship **`gemini-3.8-flash`**) and `SHA-256` paragraph caching.
 - **Non-Intrusive Floating Corner Pill (`NSPanel`)**:
   - Anchors a subtle status pill near the bottom-right corner of the active text input without ever stealing keyboard focus.
   - Shows live status: **All Clear (`✓`)**, **Checking (`⋯`)**, **Color-Coded Issue Count Badge**, or **Paused (`⏸`)**.

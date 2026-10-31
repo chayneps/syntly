@@ -70,10 +70,9 @@ public final class AppSettings: ObservableObject {
     }
 
     public static let availableModels: [String] = [
-        "gemini-3.5-flash-lite",
         "gemini-3.8-flash",
+        "gemini-3.5-flash-lite",
         "gemini-3.1-pro-preview",
-        "gemini-2.5-flash-lite",
         "gemini-2.5-flash"
     ]
 
@@ -84,7 +83,12 @@ public final class AppSettings: ObservableObject {
         let dialectStr = defaults.string(forKey: Keys.dialect) ?? EnglishDialect.us.rawValue
         self.dialect = EnglishDialect(rawValue: dialectStr) ?? .us
 
-        self.liveModel = defaults.string(forKey: Keys.liveModel) ?? "gemini-3.5-flash-lite"
+        let savedLive = defaults.string(forKey: Keys.liveModel)
+        if savedLive == nil || savedLive == "gemini-3.5-flash-lite" {
+            self.liveModel = "gemini-3.8-flash"
+        } else {
+            self.liveModel = savedLive!
+        }
         self.rewriteModel = defaults.string(forKey: Keys.rewriteModel) ?? "gemini-3.8-flash"
 
         let savedDebounce = defaults.integer(forKey: Keys.debounceMs)
