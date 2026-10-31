@@ -81,7 +81,11 @@ public struct MenuBarView: View {
     }
 
     private var authStatusSummary: String {
-        if settings.hasStoredAPIKey {
+        if settings.authMode == .cliProxy {
+            return settings.isCLIProxyReachable
+                ? "Auth: CLIProxyAPI (\(settings.cliProxyBaseURL))"
+                : "Auth: CLIProxyAPI (waiting on \(settings.cliProxyBaseURL))"
+        } else if settings.hasStoredAPIKey {
             return "Auth: Google AI Studio Key (\(settings.liveModel))"
         } else if settings.detectedGeminiCLIPath != nil && settings.isGeminiCLISignedIn {
             return "Auth: Gemini CLI Subscription (\(settings.liveModel))"

@@ -159,6 +159,7 @@ public enum RewritePreset: String, CaseIterable, Identifiable {
 
 public enum AuthProviderMode: String, CaseIterable, Identifiable, Codable {
     case auto = "auto"
+    case cliProxy = "cli_proxy"
     case geminiCLI = "gemini_cli"
     case apiKey = "api_key"
 
@@ -166,7 +167,8 @@ public enum AuthProviderMode: String, CaseIterable, Identifiable, Codable {
 
     public var displayName: String {
         switch self {
-        case .auto: return "Automatic (API Key if set, otherwise Gemini CLI)"
+        case .auto: return "Automatic (CLIProxyAPI -> API Key -> Gemini CLI)"
+        case .cliProxy: return "CLIProxyAPI / Local Proxy (Google Account OAuth, No API Key)"
         case .geminiCLI: return "Local Gemini CLI (Google Account / Subscription)"
         case .apiKey: return "Google AI Studio API Key (Direct REST)"
         }

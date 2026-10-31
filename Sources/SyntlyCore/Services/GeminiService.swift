@@ -324,13 +324,16 @@ public final class GeminiService {
         return results.sorted { ($0.utf16Location ?? 0) < ($1.utf16Location ?? 0) }
     }
 
-    // MARK: - Transport Dispatch (REST API + Gemini CLI Bridge)
+    // MARK: - Transport Dispatch (REST API + CLIProxyAPI + Gemini CLI Bridge)
 
     private func generateJSON(prompt: String, model: String, isProofreadSchema: Bool) async throws -> String {
         let apiKey = settings.activeAPIKey()
         let cliPath = settings.detectedGeminiCLIPath ?? AppSettings.locateGeminiBinary()
 
         switch settings.authMode {
+        case .cliProxy:
+            return try await callCLIProxy(prompt: prompt, model: model, isProofreadSchema: isProofreadSchema)
+
         case .apiKey:
             guard let key = apiKey else {
                 throw GeminiServiceError.noAuthenticationAvailable
@@ -344,12 +347,99 @@ public final class GeminiService {
             return try await callGeminiCLI(prompt: prompt, model: model, binaryPath: path)
 
         case .auto:
-            if let key = apiKey, !key.isEmpty {
+            if settings.isCLIProxyReachable {
+                return try await callCLIProxy(prompt: prompt, model: model, isProofreadSchema: isProofreadSchema)
+            } else if let key = apiKey, !key.isEmpty {
                 return try await callDirectREST(prompt: prompt, model: model, apiKey: key, isProofreadSchema: isProofreadSchema)
+            } else if let path = cliPath {
+                return try await callGeminiCLI(prompt: prompt, model: model, binaryPath: path)
             } else {
                 throw GeminiServiceError.noAuthenticationAvailable
             }
         }
+    }
+
+    // MARK: - CLIProxyAPI / Local Proxy (OAuth Google Account, Zero API Key)
+
+    private func callCLIProxy(
+        prompt: String,
+        model: String,
+        isProofreadSchema: Bool
+    ) async throws -> String {
+        let baseURL = settings.cliProxyBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        // 1. First attempt: Native Gemini REST endpoint via CLIProxyAPI
+        let geminiURLString = "\(baseURL)/v1beta/models/\(model):generateContent"
+        if let url = URL(string: geminiURLString) {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("Bearer cliproxy", forHTTPHeaderField: "Authorization")
+            request.timeoutInterval = 15
+
+            let generationConfig: [String: Any] = [
+                "temperature": 0.1,
+                "responseMimeType": "application/json"
+            ]
+            let payload: [String: Any] = [
+                "contents": [
+                    ["role": "user", "parts": [["text": prompt]]]
+                ],
+                "generationConfig": generationConfig
+            ]
+            request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+
+            if let (data, response) = try? await urlSession.data(for: request),
+               let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let candidates = json["candidates"] as? [[String: Any]],
+                   let text = (candidates.first?["content"] as? [String: Any])?["parts"] as? [[String: Any]],
+                   let resultText = text.first?["text"] as? String {
+                    return resultText
+                }
+            }
+        }
+
+        // 2. Second attempt / Fallback: Standard OpenAI chat completions endpoint (/v1/chat/completions)
+        let openAIURLString = "\(baseURL)/v1/chat/completions"
+        guard let url = URL(string: openAIURLString) else {
+            throw GeminiServiceError.invalidResponse("Invalid CLIProxy URL")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer cliproxy", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 15
+
+        let payload: [String: Any] = [
+            "model": model,
+            "messages": [
+                ["role": "user", "content": prompt]
+            ],
+            "response_format": ["type": "json_object"],
+            "temperature": 0.1
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+        let (data, response) = try await urlSession.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw GeminiServiceError.invalidResponse("No response from CLIProxyAPI at \(baseURL)")
+        }
+
+        guard (200...299).contains(http.statusCode) else {
+            let bodyText = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+            throw GeminiServiceError.httpError(statusCode: http.statusCode, message: "CLIProxy error: \(bodyText)")
+        }
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any],
+              let content = message["content"] as? String else {
+            throw GeminiServiceError.invalidResponse("Malformed response from CLIProxyAPI")
+        }
+
+        return content
     }
 
     // MARK: - Direct Gemini REST API (`generativelanguage.googleapis.com`)

@@ -50,10 +50,28 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(pausedUntil, forKey: Keys.pausedUntil) }
     }
 
+    @Published public var cliProxyBaseURL: String {
+        didSet { defaults.set(cliProxyBaseURL, forKey: Keys.cliProxyBaseURL) }
+    }
+
     @Published public var apiKeyInput: String = ""
     @Published public private(set) var hasStoredAPIKey: Bool = false
     @Published public private(set) var detectedGeminiCLIPath: String?
     @Published public private(set) var isGeminiCLISignedIn: Bool = false
+    @Published public private(set) var isCLIProxyReachable: Bool = false
+
+    public var isAuthReady: Bool {
+        switch authMode {
+        case .cliProxy:
+            return true // Will ping on demand
+        case .geminiCLI:
+            return isGeminiCLISignedIn
+        case .apiKey:
+            return hasStoredAPIKey
+        case .auto:
+            return isCLIProxyReachable || hasStoredAPIKey || isGeminiCLISignedIn
+        }
+    }
 
     private enum Keys {
         static let authMode = "syntly.authMode"
@@ -67,6 +85,7 @@ public final class AppSettings: ObservableObject {
         static let blockedBundleIDs = "syntly.blockedBundleIDs"
         static let customStyleInstruction = "syntly.customStyleInstruction"
         static let pausedUntil = "syntly.pausedUntil"
+        static let cliProxyBaseURL = "syntly.cliProxyBaseURL"
     }
 
     public static let availableModels: [String] = [
@@ -111,6 +130,7 @@ public final class AppSettings: ObservableObject {
         ]
         self.customStyleInstruction = defaults.string(forKey: Keys.customStyleInstruction) ?? ""
         self.pausedUntil = defaults.object(forKey: Keys.pausedUntil) as? Date
+        self.cliProxyBaseURL = defaults.string(forKey: Keys.cliProxyBaseURL) ?? "http://127.0.0.1:8317"
 
         refreshAuthStatus()
     }
@@ -124,6 +144,33 @@ public final class AppSettings: ObservableObject {
 
         self.detectedGeminiCLIPath = Self.locateGeminiBinary()
         self.isGeminiCLISignedIn = Self.checkGeminiCLICredentials()
+
+        checkCLIProxyHealth()
+    }
+
+    public func checkCLIProxyHealth() {
+        guard let url = URL(string: cliProxyBaseURL) else {
+            self.isCLIProxyReachable = false
+            return
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 1.0
+
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 1.0
+        config.timeoutIntervalForResource = 1.0
+        let probeSession = URLSession(configuration: config)
+
+        probeSession.dataTask(with: request) { [weak self] _, response, error in
+            DispatchQueue.main.async {
+                if let http = response as? HTTPURLResponse {
+                    self?.isCLIProxyReachable = (http.statusCode < 500)
+                } else {
+                    self?.isCLIProxyReachable = false
+                }
+            }
+        }.resume()
     }
 
     public func saveAPIKeyFromInput() {

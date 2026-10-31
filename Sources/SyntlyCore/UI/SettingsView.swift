@@ -93,7 +93,27 @@ public struct SettingsView: View {
             }
 
             // Gemini Connection Banner
-            if !settings.hasStoredAPIKey {
+            if settings.authMode == .cliProxy {
+                HStack(spacing: 8) {
+                    Image(systemName: settings.isCLIProxyReachable ? "checkmark.seal.fill" : "network")
+                        .foregroundStyle(settings.isCLIProxyReachable ? .green : .orange)
+                    Text(settings.isCLIProxyReachable
+                         ? "Using CLIProxyAPI at \(settings.cliProxyBaseURL) (Zero API Key, Google OAuth)"
+                         : "CLIProxyAPI Mode active — waiting for proxy on \(settings.cliProxyBaseURL)")
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Ping Proxy") {
+                        settings.checkCLIProxyHealth()
+                        runPlaygroundCheck()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            } else if !settings.hasStoredAPIKey && !settings.isAuthReady {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .top, spacing: 10) {
                         Image(systemName: "key.fill")
@@ -281,9 +301,9 @@ public struct SettingsView: View {
         }
 
         let local = GeminiService.shared.runLocalSpellcheck(on: text)
-        guard settings.hasStoredAPIKey else {
+        guard settings.isAuthReady || settings.hasStoredAPIKey else {
             playgroundIssues = local
-            playgroundError = "Please connect your free Google Gemini API key above to enable AI grammar and rewrite checks."
+            playgroundError = "Please connect your free Google Gemini API key or enable CLIProxyAPI above."
             isCheckingPlayground = false
             return
         }
@@ -314,8 +334,8 @@ public struct SettingsView: View {
 
     private func runPlaygroundRewrite(_ preset: RewritePreset) {
         let text = playgroundText
-        guard settings.hasStoredAPIKey else {
-            playgroundError = "Please connect your free Google Gemini API key above to enable AI rewrites."
+        guard settings.isAuthReady || settings.hasStoredAPIKey else {
+            playgroundError = "Please connect your free Google Gemini API key or enable CLIProxyAPI above."
             isCheckingPlayground = false
             return
         }
@@ -351,7 +371,44 @@ public struct SettingsView: View {
                 }
             }
 
-            Section("Option 1: Local Gemini CLI (Uses Your Google Account / Gemini Pro Subscription)") {
+            Section("Option 1: CLIProxyAPI / Local Proxy (Google Account OAuth, No API Key Needed)") {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Image(systemName: settings.isCLIProxyReachable ? "checkmark.circle.fill" : "network")
+                            .foregroundStyle(settings.isCLIProxyReachable ? .green : .secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(settings.isCLIProxyReachable
+                                 ? "CLIProxyAPI Connected at \(settings.cliProxyBaseURL)"
+                                 : "CLIProxyAPI (Port 8317)")
+                                .font(.subheadline.bold())
+                            Text("Uses your Google Account via CLIProxyAPI OAuth without creating an AI Studio API key.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Ping Proxy") {
+                            settings.checkCLIProxyHealth()
+                        }
+                        .controlSize(.small)
+                    }
+
+                    HStack(spacing: 8) {
+                        TextField("Proxy Base URL", text: $settings.cliProxyBaseURL)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 240)
+                        Button("Apply URL") {
+                            settings.checkCLIProxyHealth()
+                        }
+                        .controlSize(.small)
+                    }
+
+                    Text("Quickstart: run `brew install cliproxyapi && cliproxyapi` in Terminal, sign in once via browser, and you are ready!")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Option 2: Local Gemini CLI (Uses Your Google Account / Gemini Pro Subscription)") {
                 HStack {
                     if let path = settings.detectedGeminiCLIPath {
                         Image(systemName: settings.isGeminiCLISignedIn ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
