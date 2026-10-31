@@ -6,6 +6,7 @@ import SyntlyCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let coordinator = WritingAssistantCoordinator.shared
     var floatingPanelController: FloatingPanelController?
+    var statusBarController: StatusBarController?
     var settingsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -23,6 +24,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             print("   • Zero access to external apps or keystrokes.")
             print("   • Use the Live Playground window to test corrections safely.")
         }
+
+        // Initialize dedicated AppKit NSStatusItem so ✨ Syntly ALWAYS appears in the menu bar
+        statusBarController = StatusBarController(
+            coordinator: coordinator,
+            settings: .shared,
+            onOpenSettings: { [weak self] in
+                self?.openSettingsWindow()
+            }
+        )
 
         // Show the Playground & Settings window on launch so the user can test immediately
         openSettingsWindow()
@@ -65,43 +75,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct SyntlyMainApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @StateObject private var coordinator = WritingAssistantCoordinator.shared
-    @StateObject private var settings = AppSettings.shared
 
     var body: some Scene {
-        MenuBarExtra {
-            MenuBarView(
-                coordinator: coordinator,
-                settings: settings,
-                onOpenSettings: {
-                    appDelegate.openSettingsWindow()
-                }
-            )
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: menuBarIconName)
-                if case .issuesFound(let count, _) = coordinator.pillState, count > 0 {
-                    Text("\(count)")
-                }
-            }
-        }
-    }
-
-    private var menuBarIconName: String {
-        if settings.isCurrentlyPaused() || !settings.enableAsYouType {
-            return "text.badge.minus"
-        }
-        switch coordinator.pillState {
-        case .allClear:
-            return "text.badge.checkmark"
-        case .checking:
-            return "ellipsis.bubble"
-        case .issuesFound:
-            return "text.badge.star"
-        case .paused:
-            return "text.badge.minus"
-        case .error:
-            return "exclamationmark.bubble"
+        Settings {
+            SettingsView(coordinator: appDelegate.coordinator, settings: .shared)
         }
     }
 }
