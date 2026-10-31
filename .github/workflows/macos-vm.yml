@@ -1,0 +1,62 @@
+name: macOS Cloud VM Build & Test
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      interactive_ssh:
+        description: 'Keep the disposable macOS VM open with an interactive SSH/terminal session (tmate)'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  macos-cloud-vm:
+    name: Disposable macOS Cloud VM
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Cloud VM Environment
+        run: |
+          sw_vers
+          swift --version
+          uname -a
+
+      - name: Run Unit & End-to-End Test Suites
+        run: swift test -v
+
+      - name: Package Syntly.app Bundle
+        run: |
+          chmod +x scripts/build-app.sh
+          ./scripts/build-app.sh
+
+      - name: Launch Syntly.app in Cloud VM & Capture Screenshot
+        run: |
+          open Syntly.app
+          sleep 4
+          pgrep -fl Syntly || (echo "Syntly process did not start" && exit 1)
+          screencapture -x syntly-cloud-vm-screenshot.png || true
+          killall Syntly || true
+
+      - name: Upload Cloud VM Screenshot & Syntly.app Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Syntly-macOS-Cloud-VM-Output
+          path: |
+            Syntly.app
+            syntly-cloud-vm-screenshot.png
+          if-no-files-found: ignore
+
+      - name: Interactive SSH into Disposable macOS VM (Optional)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.interactive_ssh == true }}
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
+          detached: false
