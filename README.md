@@ -1,6 +1,6 @@
-# Syntly — Open-Source macOS Real-Time AI Writing Assistant (Powered by Google Gemini)
+# Syntly — Open-Source macOS Real-Time AI Writing Assistant (Universal OpenAI API & Local Proxy Support)
 
-**Syntly** is a lightweight, native macOS writing assistant built in Swift and SwiftUI that checks and polishes your writing **as you type** across any macOS application—powered for **$0** using your Google Gemini account.
+**Syntly** is a lightweight, native macOS writing assistant built in Swift and SwiftUI that checks and polishes your writing **as you type** across any macOS application—powered by any **OpenAI-compatible API**, including **CLI Proxy API**, **LM Studio**, **Ollama**, **Kiro Gateway**, **OpenAI**, **OpenRouter**, or **Google AI Studio**.
 
 ---
 
@@ -8,7 +8,12 @@
 
 - **Real-Time Corrections While You Type**:
   - Monitors focused text fields across native macOS apps, browsers, and Electron/Chromium apps (Slack, VS Code, Notion, Discord).
-  - Combines an **instant `<5ms` local spellcheck pass** (`NSSpellChecker`) with **debounced contextual Gemini checks** (defaulting to the flagship **`gemini-3.8-flash`**) and `SHA-256` paragraph caching.
+  - Combines an **instant `<5ms` local spellcheck pass** (`NSSpellChecker`) with **debounced contextual AI checks** and `SHA-256` paragraph caching.
+- **Universal OpenAI-Compatible API Support**:
+  - Connect to **CLI Proxy API** (`http://127.0.0.1:8317/v1`) using your Google/Anthropic/OpenAI accounts.
+  - Connect to **LM Studio** (`http://localhost:1234/v1`) or **Ollama** (`http://localhost:11434/v1`) with zero API fees and 100% local privacy.
+  - Connect to **Kiro Gateway**, **OpenAI**, **OpenRouter**, or **Google AI Studio** with your own API token.
+  - Built-in **1-Click Test Connection** button and **Fetch Available Models** discovery.
 - **Non-Intrusive Floating Corner Pill (`NSPanel`)**:
   - Anchors a subtle status pill near the bottom-right corner of the active text input without ever stealing keyboard focus.
   - Shows live status: **All Clear (`✓`)**, **Checking (`⋯`)**, **Color-Coded Issue Count Badge**, or **Paused (`⏸`)**.
@@ -26,17 +31,23 @@
 
 ---
 
-## 🔑 Free Google Gemini Account Setup ($0 Cost)
+## 🔑 AI Provider & Setup
 
-Because Syntly is 100% client-side and open-source, there is no backend server and zero developer API fee. Users can authenticate for free in two ways:
+Configure your provider in **Syntly Settings → API & Model**:
 
-### Option 1: Local Gemini CLI (Uses Your Google Account / Gemini Pro Subscription)
-1. Install the official Gemini CLI (`npm install -g @google/gemini-cli`) and run `gemini` in Terminal to sign in with your Google Account (*Login with Google*).
-2. Syntly automatically detects `/usr/local/bin/gemini` (or `/opt/homebrew/bin/gemini`) and uses your included daily quota (**1,000 requests/day** on Free Google accounts, **1,500/day** on Google AI Pro, or **2,000/day** on Google AI Ultra) at **$0 extra cost**.
-
-### Option 2: Google AI Studio API Key (Fast `<400ms` Direct REST)
-1. Generate a free API key at [Google AI Studio](https://aistudio.google.com/apikey) (no credit card required for the Free Tier, or use the $10/month Google Cloud credit bundled with Google AI Pro).
-2. Paste the key into **Syntly Settings → Gemini Account** (stored securely in your local **macOS Keychain**).
+1. **CLI Proxy API (Recommended if running locally)**:
+   - Endpoint: `http://127.0.0.1:8317/v1`
+   - Token: Your API key configured in `~/.cli-proxy-api/config.yaml` (Syntly auto-detects local keys).
+   - Model: `gemini-3.8-flash-high`, `gemini-3-flash`, `gpt-4o-mini`, etc.
+2. **Local LM Studio / Ollama (100% Free & Offline)**:
+   - LM Studio: `http://localhost:1234/v1` (Token optional)
+   - Ollama: `http://localhost:11434/v1` (Token optional)
+3. **Kiro Gateway / Cloud Endpoints**:
+   - Endpoint: `https://api.kirogateway.com/v1` or `https://api.openai.com/v1`
+   - Token: Stored securely in your macOS Keychain.
+4. **Test Connection**:
+   - Click **Test Connection Now** to measure round-trip latency and confirm model availability.
+   - Click **Fetch Available Models** to automatically populate the model dropdown from the server.
 
 ---
 
@@ -61,6 +72,14 @@ chmod +x scripts/build-app.sh
 ./scripts/build-app.sh
 open Syntly.app
 ```
+*Packages high-resolution Apple ICNS squircle app icon (`assets/AppIcon.icns`), configures `Info.plist`, and codesigns the bundle.*
+
+### Build Distribution DMG Installer (Universal 2: Apple Silicon + Intel)
+```bash
+chmod +x scripts/build-dmg.sh
+./scripts/build-dmg.sh
+```
+*Creates `Syntly-0.1.0-Universal.dmg` containing a native Universal 2 binary (`arm64` + `x86_64`) and an `/Applications` drag-and-drop installer link.*
 
 When prompted, grant **Accessibility Permission** in **System Settings → Privacy & Security → Accessibility** so Syntly can detect active text fields and apply corrections across apps.
 

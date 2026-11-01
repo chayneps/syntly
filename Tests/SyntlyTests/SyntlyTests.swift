@@ -87,6 +87,32 @@ final class SyntlyUnitTests: XCTestCase {
         XCTAssertThrowsError(try GeminiService.parseProofreadJSON("not valid json at all"))
     }
 
+    func testExtractRewrittenTextFromVariousFormats() {
+        // 1. User's exact bug scenario: model returned array of strings for "issues"
+        let withStringIssues = """
+        {"issues": ["The greeting and question lack proper capitalization, punctuation, and grammatical structure."], "rewrittenText": "Hi, how can I help?"}
+        """
+        XCTAssertEqual(GeminiService.extractRewrittenText(from: withStringIssues), "Hi, how can I help?")
+
+        // 2. Wrapped in Markdown code fences
+        let withCodeFences = """
+        ```json
+        {"rewrittenText": "Let me know if you need anything else."}
+        ```
+        """
+        XCTAssertEqual(GeminiService.extractRewrittenText(from: withCodeFences), "Let me know if you need anything else.")
+
+        // 3. Snake_case key
+        let withSnakeCase = """
+        {"rewritten_text": "Here is the summary."}
+        """
+        XCTAssertEqual(GeminiService.extractRewrittenText(from: withSnakeCase), "Here is the summary.")
+
+        // 4. Raw plain text (already unformatted)
+        let plainText = "Simple plain sentence with no JSON at all."
+        XCTAssertEqual(GeminiService.extractRewrittenText(from: plainText), "Simple plain sentence with no JSON at all.")
+    }
+
     func testResolveIssuesUTF16RangesAndDictionaryFilter() {
         let source = "Hello Syntly, their going to discuss about the roadmap."
         let rawIssues = [
@@ -221,6 +247,85 @@ final class SyntlyUnitTests: XCTestCase {
         XCTAssertTrue(settings.isCurrentlyPaused())
         settings.resumeMonitoring()
         XCTAssertFalse(settings.isCurrentlyPaused())
+
+        // Per-app pill drag offset memory
+        settings.resetAllPillOffsets()
+        XCTAssertNil(settings.pillOffset(for: "com.google.Chrome"))
+        XCTAssertNil(settings.pillOffset(for: "com.apple.Notes"))
+
+        let chromeOffset = AppPillOffset(dx: -80, dy: 15)
+        let notesOffset = AppPillOffset(dx: 20, dy: -40)
+
+        settings.setPillOffset(chromeOffset, for: "com.google.Chrome")
+        settings.setPillOffset(notesOffset, for: "com.apple.Notes")
+
+        XCTAssertEqual(settings.pillOffset(for: "com.google.Chrome"), chromeOffset)
+        XCTAssertEqual(settings.pillOffset(for: "com.apple.Notes"), notesOffset)
+        XCTAssertEqual(settings.appPillOffsets.count, 2)
+
+        // Reset single app offset
+        settings.resetPillOffset(for: "com.google.Chrome")
+        XCTAssertNil(settings.pillOffset(for: "com.google.Chrome"))
+        XCTAssertEqual(settings.pillOffset(for: "com.apple.Notes"), notesOffset)
+
+        // Reset all offsets
+        settings.resetAllPillOffsets()
+        XCTAssertEqual(settings.appPillOffsets.count, 0)
+        XCTAssertNil(settings.pillOffset(for: "com.apple.Notes"))
+
+        // Dock icon & launch at login persistence
+        let currentDock = settings.showDockIcon
+        settings.showDockIcon = !currentDock
+        XCTAssertEqual(settings.showDockIcon, !currentDock)
+        settings.showDockIcon = currentDock
+
+        let currentLaunch = settings.launchAtLoginState
+        settings.setLaunchAtLogin(!currentLaunch)
+        settings.setLaunchAtLogin(currentLaunch)
+    }
+
+    func testMultiModelTestResultsState() {
+        let liveResult = ModelTestResult(
+            role: "As-You-Type Model",
+            model: "gemini-3.5-flash-lite",
+            latencyMs: 120,
+            isSuccess: true
+        )
+        let rewriteResult = ModelTestResult(
+            role: "Dialog & Rewrite Model",
+            model: "gemini-3.8-flash-high",
+            latencyMs: 340,
+            isSuccess: true
+        )
+        let failedResult = ModelTestResult(
+            role: "Dialog & Rewrite Model",
+            model: "invalid-model",
+            latencyMs: 0,
+            isSuccess: false,
+            errorMessage: "404 Not Found"
+        )
+
+        XCTAssertEqual(liveResult.id, "As-You-Type Model-gemini-3.5-flash-lite")
+        XCTAssertTrue(liveResult.isSuccess)
+        XCTAssertEqual(liveResult.latencyMs, 120)
+
+        let successState = ConnectionTestState.completed(results: [liveResult, rewriteResult])
+        if case .completed(let results) = successState {
+            XCTAssertEqual(results.count, 2)
+            XCTAssertTrue(results.allSatisfy { $0.isSuccess })
+        } else {
+            XCTFail("Expected .completed state")
+        }
+
+        let mixedState = ConnectionTestState.completed(results: [liveResult, failedResult])
+        if case .completed(let results) = mixedState {
+            XCTAssertEqual(results.count, 2)
+            XCTAssertFalse(results.allSatisfy { $0.isSuccess })
+            XCTAssertTrue(results.contains { $0.isSuccess })
+            XCTAssertEqual(results[1].errorMessage, "404 Not Found")
+        } else {
+            XCTFail("Expected .completed state")
+        }
     }
 }
 
@@ -330,7 +435,6 @@ final class SyntlyEndToEndTests: XCTestCase {
         coordinator.acceptIssue(coordinator.issues[0])
 
         XCTAssertEqual(textInTargetApp, "Hi team, they're going to discuss about the launch.")
-        XCTAssertEqual(coordinator.totalFixesApplied, 1)
         XCTAssertEqual(coordinator.issues.count, 1)
         XCTAssertEqual(coordinator.pillState, .issuesFound(count: 1, topCategory: .fluency))
     }
@@ -379,7 +483,6 @@ final class SyntlyEndToEndTests: XCTestCase {
         XCTAssertEqual(textInTargetApp, "I think they're going late because traffic is heavy.")
         XCTAssertEqual(coordinator.issues.count, 0)
         XCTAssertEqual(coordinator.pillState, .allClear)
-        XCTAssertEqual(coordinator.totalFixesApplied, 2)
     }
 
     func testEndToEndRewriteSelectionFlow() async throws {
@@ -463,5 +566,153 @@ final class SyntlyEndToEndTests: XCTestCase {
 
         XCTAssertEqual(coordinator.pillState, .paused(reason: "Paused"))
         XCTAssertEqual(MockGeminiURLProtocol.capturedRequests.count, 0)
+    }
+
+    // MARK: - Universal OpenAI API & Presets Tests
+
+    func testNormalizeChatCompletionsAndModelsURLs() {
+        // Chat completions URL normalization
+        let c1 = LLMService.normalizeChatCompletionsURL(from: "http://127.0.0.1:8317")
+        XCTAssertEqual(c1?.absoluteString, "http://127.0.0.1:8317/v1/chat/completions")
+
+        let c2 = LLMService.normalizeChatCompletionsURL(from: "http://127.0.0.1:8317/v1")
+        XCTAssertEqual(c2?.absoluteString, "http://127.0.0.1:8317/v1/chat/completions")
+
+        let c3 = LLMService.normalizeChatCompletionsURL(from: "http://localhost:1234/v1/")
+        XCTAssertEqual(c3?.absoluteString, "http://localhost:1234/v1/chat/completions")
+
+        let c4 = LLMService.normalizeChatCompletionsURL(from: "https://api.openai.com/v1")
+        XCTAssertEqual(c4?.absoluteString, "https://api.openai.com/v1/chat/completions")
+
+        let c5 = LLMService.normalizeChatCompletionsURL(from: "https://api.kirogateway.com/v1/chat/completions")
+        XCTAssertEqual(c5?.absoluteString, "https://api.kirogateway.com/v1/chat/completions")
+
+        // Models URL normalization
+        let m1 = LLMService.normalizeModelsURL(from: "http://127.0.0.1:8317")
+        XCTAssertEqual(m1?.absoluteString, "http://127.0.0.1:8317/v1/models")
+
+        let m2 = LLMService.normalizeModelsURL(from: "http://127.0.0.1:8317/v1")
+        XCTAssertEqual(m2?.absoluteString, "http://127.0.0.1:8317/v1/models")
+
+        let m3 = LLMService.normalizeModelsURL(from: "https://api.openai.com/v1/chat/completions")
+        XCTAssertEqual(m3?.absoluteString, "https://api.openai.com/v1/models")
+    }
+
+    func testParseOpenAIChatCompletionsResponse() throws {
+        let openAIJson = """
+        {
+          "id": "chatcmpl-123",
+          "object": "chat.completion",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "{\\"issues\\": [{\\"original\\": \\"teh\\", \\"replacement\\": \\"the\\", \\"category\\": \\"correctness\\", \\"explanation\\": \\"Spelling\\"}]}"
+              }
+            }
+          ]
+        }
+        """
+
+        let content = try LLMService.parseContentFromAnyResponse(data: Data(openAIJson.utf8))
+        let parsed = try LLMService.parseProofreadJSON(content)
+        XCTAssertEqual(parsed.issues.count, 1)
+        XCTAssertEqual(parsed.issues.first?.original, "teh")
+        XCTAssertEqual(parsed.issues.first?.replacement, "the")
+    }
+
+    func testAPIProviderPresets() {
+        let cliProxy = APIProviderPreset.cliProxy
+        XCTAssertEqual(cliProxy.defaultEndpoint, "http://127.0.0.1:8317/v1")
+        XCTAssertTrue(cliProxy.requiresToken)
+
+        let lmStudio = APIProviderPreset.lmStudio
+        XCTAssertEqual(lmStudio.defaultEndpoint, "http://localhost:1234/v1")
+        XCTAssertFalse(lmStudio.requiresToken)
+
+        let ollama = APIProviderPreset.ollama
+        XCTAssertEqual(ollama.defaultEndpoint, "http://localhost:11434/v1")
+        XCTAssertFalse(ollama.requiresToken)
+
+        let kiro = APIProviderPreset.kiro
+        XCTAssertEqual(kiro.defaultEndpoint, "https://api.kirogateway.com/v1")
+        XCTAssertTrue(kiro.requiresToken)
+
+        let openAI = APIProviderPreset.openAI
+        XCTAssertEqual(openAI.defaultEndpoint, "https://api.openai.com/v1")
+        XCTAssertTrue(openAI.requiresToken)
+    }
+
+    func testConnectionTestSuccessAndFailure() async {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockGeminiURLProtocol.self]
+        let mockSession = URLSession(configuration: config)
+        let service = LLMService(settings: settings, urlSession: mockSession)
+
+        // 1. Success test
+        MockGeminiURLProtocol.requestHandler = { request in
+            let response = """
+            {"choices": [{"message": {"content": "{\\"status\\": \\"ok\\"}"}}]}
+            """
+            let httpResponse = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            return (httpResponse, Data(response.utf8))
+        }
+
+        let successResult = await service.testConnection(
+            endpoint: "http://127.0.0.1:8317/v1",
+            token: "test-token",
+            model: "gemini-3.8-flash-high"
+        )
+        if case .success(let latency, let model, _) = successResult {
+            XCTAssertGreaterThanOrEqual(latency, 1)
+            XCTAssertEqual(model, "gemini-3.8-flash-high")
+        } else {
+            XCTFail("Expected success, got \(successResult)")
+        }
+
+        // 2. 401 Unauthorized failure test
+        MockGeminiURLProtocol.requestHandler = { request in
+            let errResponse = """
+            {"error": {"message": "Invalid API Key"}}
+            """
+            let httpResponse = HTTPURLResponse(url: request.url!, statusCode: 401, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            return (httpResponse, Data(errResponse.utf8))
+        }
+
+        let failureResult = await service.testConnection(
+            endpoint: "http://127.0.0.1:8317/v1",
+            token: "bad-token",
+            model: "gemini-3.8-flash-high"
+        )
+        if case .failure(let msg) = failureResult {
+            XCTAssertTrue(msg.contains("401") || msg.contains("Invalid API Key"))
+        } else {
+            XCTFail("Expected failure, got \(failureResult)")
+        }
+    }
+
+    func testFetchAvailableModels() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockGeminiURLProtocol.self]
+        let mockSession = URLSession(configuration: config)
+        let service = LLMService(settings: settings, urlSession: mockSession)
+
+        MockGeminiURLProtocol.requestHandler = { request in
+            let modelsJson = """
+            {
+              "data": [
+                {"id": "gemini-3.8-flash-high"},
+                {"id": "gpt-4o-mini"},
+                {"id": "claude-3-5-sonnet"}
+              ]
+            }
+            """
+            let httpResponse = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            return (httpResponse, Data(modelsJson.utf8))
+        }
+
+        let models = try await service.fetchAvailableModels(endpoint: "http://127.0.0.1:8317/v1", token: "test-token")
+        XCTAssertEqual(models, ["claude-3-5-sonnet", "gemini-3.8-flash-high", "gpt-4o-mini"])
     }
 }

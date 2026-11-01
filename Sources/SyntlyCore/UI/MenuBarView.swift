@@ -4,23 +4,25 @@ import AppKit
 public struct MenuBarView: View {
     @ObservedObject var coordinator: WritingAssistantCoordinator
     @ObservedObject var settings: AppSettings
+    public var onOpenWritingPad: () -> Void
     public var onOpenSettings: () -> Void
 
     public init(
         coordinator: WritingAssistantCoordinator,
         settings: AppSettings = .shared,
+        onOpenWritingPad: @escaping () -> Void,
         onOpenSettings: @escaping () -> Void
     ) {
         self.coordinator = coordinator
         self.settings = settings
+        self.onOpenWritingPad = onOpenWritingPad
         self.onOpenSettings = onOpenSettings
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Image(systemName: "sparkles")
-                Text("Syntly Writing Assistant")
+                Text("Synt(ax)ly Writing Assistant")
                     .font(.headline)
             }
 
@@ -34,6 +36,7 @@ public struct MenuBarView: View {
             if !coordinator.isAccessibilityTrusted {
                 Button("⚠️ Grant Accessibility Access…") {
                     coordinator.requestAccessibilityPermission()
+                    coordinator.openSystemSettings()
                 }
             }
 
@@ -42,8 +45,16 @@ public struct MenuBarView: View {
             Toggle("Correct While I Type", isOn: $settings.enableAsYouType)
             Toggle("Instant Local Spellcheck", isOn: $settings.enableLocalSpellcheck)
 
+            Divider()
+
+            Toggle("Show Icon in Dock", isOn: $settings.showDockIcon)
+            Toggle("Start App when Login", isOn: Binding(
+                get: { settings.launchAtLoginState },
+                set: { settings.setLaunchAtLogin($0) }
+            ))
+
             if settings.isCurrentlyPaused() {
-                Button("Resume Syntly Now") {
+                Button("Resume Synt(ax)ly Now") {
                     settings.resumeMonitoring()
                 }
             } else {
@@ -61,18 +72,23 @@ public struct MenuBarView: View {
 
             Divider()
 
-            Text("Session: \(coordinator.totalChecksCount) checks • \(coordinator.totalFixesApplied) fixes applied")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            Button {
+                onOpenWritingPad()
+            } label: {
+                Label("Open Writing Pad", systemImage: "square.and.pencil")
+            }
+            .keyboardShortcut("n", modifiers: .command)
 
-            Button("Open Playground & Settings…") {
+            Button {
                 onOpenSettings()
+            } label: {
+                Label("Settings…", systemImage: "gearshape")
             }
             .keyboardShortcut(",", modifiers: .command)
 
             Divider()
 
-            Button("Quit Syntly") {
+            Button("Quit Synt(ax)ly") {
                 NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q", modifiers: .command)
@@ -81,18 +97,10 @@ public struct MenuBarView: View {
     }
 
     private var authStatusSummary: String {
-        if settings.authMode == .cliProxy {
-            return settings.isCLIProxyReachable
-                ? "Auth: CLIProxyAPI (\(settings.cliProxyBaseURL))"
-                : "Auth: CLIProxyAPI (waiting on \(settings.cliProxyBaseURL))"
-        } else if settings.hasStoredAPIKey {
-            return "Auth: Google AI Studio Key (\(settings.liveModel))"
-        } else if settings.detectedGeminiCLIPath != nil && settings.isGeminiCLISignedIn {
-            return "Auth: Gemini CLI Subscription (\(settings.liveModel))"
-        } else if settings.detectedGeminiCLIPath != nil {
-            return "Auth: Gemini CLI found (run `gemini` to sign in)"
+        if settings.isAuthReady {
+            return "API: Connected (\(settings.apiEndpoint))"
         } else {
-            return "Auth: Setup required in Settings"
+            return "API: Setup required in Settings"
         }
     }
 }

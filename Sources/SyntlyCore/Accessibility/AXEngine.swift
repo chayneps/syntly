@@ -68,7 +68,8 @@ public final class AXEngine {
     // MARK: - Lifecycle & Permissions
 
     public func start() {
-        checkTrust(prompt: true)
+        // Silently check trust status on startup; never trigger an invasive OS modal prompt automatically.
+        checkTrust(prompt: false)
         setupWorkspaceNotifications()
         startTrustPolling()
 
@@ -232,7 +233,7 @@ public final class AXEngine {
             return
         }
 
-        // Ignore Syntly's own floating windows unless testing in Settings Playground
+        // Ignore Syntly's own floating windows unless testing in Writing Pad
         if frontApp.processIdentifier == ProcessInfo.processInfo.processIdentifier {
             return
         }
@@ -301,6 +302,7 @@ public final class AXEngine {
         }
 
         guard let element = lastFocusedElement else { return false }
+        let targetApp = resolveTargetApplication(from: element)
 
         // Compute current range of `issue.original` in the live element text
         let liveText = copyStringAttribute(element, attribute: kAXValueAttribute) ?? currentText
@@ -315,22 +317,51 @@ public final class AXEngine {
             targetRange = nsLive.range(of: issue.original)
         }
 
-        // Tier 1: Direct AX Selected Range + Selected Text Replacement
+        // Selection & Replacement Cascade
         if targetRange.location != NSNotFound {
+            _ = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+
+            // Select the target text range via kAXSelectedTextRangeAttribute
             var cfRange = CFRange(location: targetRange.location, length: targetRange.length)
             if let rangeValue = AXValueCreate(.cfRange, &cfRange) {
-                let setRangeErr = AXUIElementSetAttributeValue(
+                _ = AXUIElementSetAttributeValue(
                     element,
                     kAXSelectedTextRangeAttribute as CFString,
                     rangeValue
                 )
-                if setRangeErr == .success {
-                    let setTextErr = AXUIElementSetAttributeValue(
-                        element,
-                        kAXSelectedTextAttribute as CFString,
-                        issue.replacement as CFTypeRef
-                    )
-                    if setTextErr == .success {
+            }
+
+            let isChromium = isChromiumOrElectronApp(targetApp, element: element)
+
+            // For native macOS applications (TextEdit, Notes, Mail), try direct AXSelectedTextAttribute
+            if !isChromium {
+                let setTextErr = AXUIElementSetAttributeValue(
+                    element,
+                    kAXSelectedTextAttribute as CFString,
+                    issue.replacement as CFTypeRef
+                )
+                if setTextErr == .success {
+                    // Verification read-back: confirm the selected text or value actually mutated
+                    let liveSelected = copyStringAttribute(element, attribute: kAXSelectedTextAttribute)
+                    let liveVal = copyStringAttribute(element, attribute: kAXValueAttribute)
+                    if liveSelected == issue.replacement || (liveVal != nil && !liveVal!.contains(issue.original)) {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            self.pollCurrentFocusedElement()
+                        }
+                        return true
+                    }
+                }
+
+                // Tier 2: Try kAXValueAttribute for native controls
+                let updatedFullText = nsLive.replacingCharacters(in: targetRange, with: issue.replacement)
+                let setValErr = AXUIElementSetAttributeValue(
+                    element,
+                    kAXValueAttribute as CFString,
+                    updatedFullText as CFTypeRef
+                )
+                if setValErr == .success {
+                    let liveVal = copyStringAttribute(element, attribute: kAXValueAttribute)
+                    if liveVal == updatedFullText || (liveVal != nil && !liveVal!.contains(issue.original)) {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                             self.pollCurrentFocusedElement()
                         }
@@ -339,27 +370,10 @@ public final class AXEngine {
                 }
             }
 
-            // Tier 2: Full kAXValueAttribute Replacement
-            let updatedFullText = nsLive.replacingCharacters(in: targetRange, with: issue.replacement)
-            let setValErr = AXUIElementSetAttributeValue(
-                element,
-                kAXValueAttribute as CFString,
-                updatedFullText as CFTypeRef
-            )
-            if setValErr == .success {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                    self.pollCurrentFocusedElement()
-                }
-                return true
-            }
-
-            // Tier 3: Select range via AX + Transient Clipboard Cmd+V Paste Fallback
-            var cfRangePaste = CFRange(location: targetRange.location, length: targetRange.length)
-            if let rangeValue = AXValueCreate(.cfRange, &cfRangePaste) {
-                _ = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, rangeValue)
-                pasteViaTransientClipboard(issue.replacement)
-                return true
-            }
+            // Tier 3: Selection is set via AXSelectedTextRangeAttribute.
+            // Dispatch transient clipboard Cmd+V paste to replace the selection
+            pasteViaTransientClipboard(issue.replacement, targetApp: targetApp)
+            return true
         }
 
         return false
@@ -372,66 +386,165 @@ public final class AXEngine {
         }
 
         guard let element = lastFocusedElement else { return false }
+        let targetApp = resolveTargetApplication(from: element)
 
-        // If user has a selection, replace selection first
-        if let selRange = copyRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute),
-           selRange.length > 0 {
-            let err = AXUIElementSetAttributeValue(
+        _ = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+
+        let isChromium = isChromiumOrElectronApp(targetApp, element: element)
+
+        if !isChromium {
+            // If user has a selection, replace selection first
+            if let selRange = copyRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute),
+               selRange.length > 0 {
+                let err = AXUIElementSetAttributeValue(
+                    element,
+                    kAXSelectedTextAttribute as CFString,
+                    newText as CFTypeRef
+                )
+                if err == .success {
+                    let liveSelected = copyStringAttribute(element, attribute: kAXSelectedTextAttribute)
+                    if liveSelected == newText {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            self.pollCurrentFocusedElement()
+                        }
+                        return true
+                    }
+                }
+            }
+
+            // Otherwise replace full value attribute
+            let valErr = AXUIElementSetAttributeValue(
                 element,
-                kAXSelectedTextAttribute as CFString,
+                kAXValueAttribute as CFString,
                 newText as CFTypeRef
             )
-            if err == .success {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                    self.pollCurrentFocusedElement()
+            if valErr == .success {
+                let liveVal = copyStringAttribute(element, attribute: kAXValueAttribute)
+                if liveVal == newText {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        self.pollCurrentFocusedElement()
+                    }
+                    return true
                 }
-                return true
             }
-        }
-
-        // Otherwise replace full value attribute
-        let valErr = AXUIElementSetAttributeValue(
-            element,
-            kAXValueAttribute as CFString,
-            newText as CFTypeRef
-        )
-        if valErr == .success {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                self.pollCurrentFocusedElement()
+        } else {
+            // In Chromium/Electron, ensure text is selected before pasting
+            let selRange = copyRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute)
+            if selRange == nil || selRange?.length == 0 {
+                if let liveText = copyStringAttribute(element, attribute: kAXValueAttribute) {
+                    var fullRange = CFRange(location: 0, length: (liveText as NSString).length)
+                    if let rangeVal = AXValueCreate(.cfRange, &fullRange) {
+                        _ = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, rangeVal)
+                    }
+                }
             }
-            return true
         }
 
         // Fallback to transient clipboard paste
-        pasteViaTransientClipboard(newText)
+        pasteViaTransientClipboard(newText, targetApp: targetApp)
         return true
     }
 
-    private func pasteViaTransientClipboard(_ text: String) {
+    private func resolveTargetApplication(from element: AXUIElement) -> NSRunningApplication? {
+        var targetPID: pid_t = 0
+        AXUIElementGetPid(element, &targetPID)
+        var targetApp = targetPID > 0 ? NSRunningApplication(processIdentifier: targetPID) : nil
+
+        if targetApp == nil || targetApp?.activationPolicy != .regular {
+            if let front = NSWorkspace.shared.frontmostApplication,
+               front.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+                targetApp = front
+            }
+        }
+
+        // If targetApp is an accessory or helper process, map to main regular app
+        if let app = targetApp, app.activationPolicy != .regular {
+            if let bid = app.bundleIdentifier?.lowercased() {
+                if bid.contains("chrome") {
+                    if let mainApp = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == "com.google.Chrome" }) {
+                        targetApp = mainApp
+                    }
+                } else if bid.contains("antigravity") {
+                    if let mainApp = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == "com.google.antigravity" }) {
+                        targetApp = mainApp
+                    }
+                }
+            }
+        }
+
+        return targetApp
+    }
+
+    private func isChromiumOrElectronApp(_ targetApp: NSRunningApplication?, element: AXUIElement) -> Bool {
+        let app = targetApp ?? NSWorkspace.shared.frontmostApplication
+        let bid = (app?.bundleIdentifier ?? "").lowercased()
+        let name = (app?.localizedName ?? "").lowercased()
+
+        if bid.contains("chrome") || bid.contains("antigravity") || bid.contains("electron") ||
+           bid.contains("slack") || bid.contains("vscode") || bid.contains("code") ||
+           bid.contains("brave") || bid.contains("edge") || bid.contains("discord") ||
+           bid.contains("notion") || bid.contains("cursor") ||
+           name.contains("chrome") || name.contains("antigravity") {
+            return true
+        }
+
+        let role = copyStringAttribute(element, attribute: kAXRoleAttribute) ?? ""
+        let subrole = copyStringAttribute(element, attribute: kAXSubroleAttribute) ?? ""
+        if role.contains("Web") || subrole.contains("Web") {
+            return true
+        }
+
+        return false
+    }
+
+    private func pasteViaTransientClipboard(_ text: String, targetApp: NSRunningApplication?) {
         let pasteboard = NSPasteboard.general
         let previousString = pasteboard.string(forType: .string)
 
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
-        pasteboard.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
 
-        // Post synthetic Cmd + V (keyCode 0x09 = 'v')
-        let source = CGEventSource(stateID: .combinedSessionState)
-        if let keyDown = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: true),
-           let keyUp = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: false) {
-            keyDown.flags = .maskCommand
-            keyUp.flags = .maskCommand
-            keyDown.post(tap: .cghidEventTap)
-            keyUp.post(tap: .cghidEventTap)
+        // Ensure host application has active window focus
+        if let app = targetApp, !app.isActive {
+            if #available(macOS 14.0, *) {
+                app.activate()
+            } else {
+                app.activate(options: .activateIgnoringOtherApps)
+            }
         }
 
-        // Restore previous clipboard after 150ms
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            if let prev = previousString {
-                pasteboard.clearContents()
-                pasteboard.setString(prev, forType: .string)
+        // Delay 50ms to allow target window and selection to settle
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            let source = CGEventSource(stateID: .combinedSessionState)
+            source?.setLocalEventsFilterDuringSuppressionState(
+                [.permitLocalMouseEvents, .permitSystemDefinedEvents],
+                state: .eventSuppressionStateSuppressionInterval
+            )
+
+            let vKeyCode: CGKeyCode = 9 // kVK_ANSI_V
+            // Command flag with left-command device flag 0x000008 (NX_DEVICELCMDKEYMASK)
+            let cmdFlags: CGEventFlags = [.maskCommand, CGEventFlags(rawValue: 0x000008)]
+
+            guard let vDown = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: true),
+                  let vUp = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: false) else {
+                return
             }
-            self.pollCurrentFocusedElement()
+
+            vDown.flags = cmdFlags
+            vUp.flags = cmdFlags
+
+            vDown.post(tap: .cgSessionEventTap)
+            vUp.post(tap: .cgSessionEventTap)
+
+            // Safe clipboard restoration after 1.2 seconds:
+            // Only restore if clipboard still contains the replacement text (user hasn't copied something else)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                if let prev = previousString, pasteboard.string(forType: .string) == text {
+                    pasteboard.clearContents()
+                    pasteboard.setString(prev, forType: .string)
+                }
+                self.pollCurrentFocusedElement()
+            }
         }
     }
 
@@ -475,8 +588,14 @@ public final class AXEngine {
     private func copyStringAttribute(_ element: AXUIElement, attribute: String) -> String? {
         var valueRef: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(element, attribute as CFString, &valueRef)
-        guard err == .success, let val = valueRef as? String else { return nil }
-        return val
+        guard err == .success, let val = valueRef else { return nil }
+        if let str = val as? String {
+            return str
+        }
+        if let attrStr = val as? NSAttributedString {
+            return attrStr.string
+        }
+        return nil
     }
 
     private func copyRangeAttribute(_ element: AXUIElement, attribute: String) -> NSRange? {
@@ -490,11 +609,11 @@ public final class AXEngine {
         return NSRange(location: cfRange.location, length: cfRange.length)
     }
 
-    /// Resolves the bottom-right corner of the focused text field (or caret bounds) in AppKit screen coordinates.
+    /// Resolves the top-left corner of the focused text field (or caret bounds) in AppKit screen coordinates.
     private func resolveAnchorAppKitPoint(for element: AXUIElement, selectedRange: NSRange?) -> CGPoint {
         let primaryScreenHeight = NSScreen.screens.first?.frame.height ?? NSScreen.main?.frame.height ?? 1080
 
-        // 1. Try element frame (bottom-right corner of the focused text box)
+        // 1. Try element frame (top-left corner of the focused text box)
         var posRef: CFTypeRef?
         var sizeRef: CFTypeRef?
         if AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posRef) == .success,
@@ -505,13 +624,11 @@ public final class AXEngine {
             if AXValueGetValue(pVal as! AXValue, .cgPoint, &point),
                AXValueGetValue(sVal as! AXValue, .cgSize, &size),
                size.width > 20, size.height > 12 {
-                // Clamp extraordinarily tall webviews/editors to visible window or caret bounds
-                if size.height <= 500 {
-                    let quartzBottomRightX = point.x + size.width - 16
-                    let quartzBottomRightY = point.y + size.height - 12
-                    let appKitY = primaryScreenHeight - quartzBottomRightY
-                    return CGPoint(x: max(40, quartzBottomRightX), y: max(40, appKitY))
-                }
+                // In Quartz: (point.x, point.y) is top-left of element
+                // In AppKit (bottom-left origin): appKitTopY = primaryScreenHeight - point.y
+                let appKitTopY = primaryScreenHeight - point.y
+                let appKitLeftX = point.x
+                return CGPoint(x: max(20, appKitLeftX), y: max(40, appKitTopY))
             }
         }
 
@@ -530,17 +647,16 @@ public final class AXEngine {
                     var rect = CGRect.zero
                     if AXValueGetValue(bVal as! AXValue, .cgRect, &rect),
                        rect.origin.x > 0 || rect.origin.y > 0 {
-                        let quartzX = rect.maxX + 12
-                        let quartzY = rect.maxY + 8
-                        let appKitY = primaryScreenHeight - quartzY
-                        return CGPoint(x: max(40, quartzX), y: max(40, appKitY))
+                        let appKitTopY = primaryScreenHeight - rect.minY
+                        let appKitLeftX = rect.minX - 44
+                        return CGPoint(x: max(20, appKitLeftX), y: max(40, appKitTopY))
                     }
                 }
             }
         }
 
-        // 3. Fallback near mouse cursor or bottom-right of main screen
+        // 3. Fallback near mouse cursor or top-left of main screen
         let mouse = NSEvent.mouseLocation
-        return CGPoint(x: max(60, mouse.x + 24), y: max(60, mouse.y - 24))
+        return CGPoint(x: max(40, mouse.x - 24), y: max(40, mouse.y + 24))
     }
 }

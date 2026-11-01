@@ -2,28 +2,33 @@ import Foundation
 import AppKit
 import CryptoKit
 
-public enum GeminiServiceError: LocalizedError {
+public enum LLMServiceError: LocalizedError {
     case noAuthenticationAvailable
+    case invalidURL(String)
     case invalidResponse(String)
     case httpError(statusCode: Int, message: String)
-    case cliError(String)
+    case networkError(String)
 
     public var errorDescription: String? {
         switch self {
         case .noAuthenticationAvailable:
-            return "Please connect your free Google Gemini API key above to start checking your writing."
+            return "Please configure your API endpoint and token in Settings."
+        case .invalidURL(let msg):
+            return "Invalid API URL: \(msg)"
         case .invalidResponse(let detail):
-            return "Could not parse Gemini response: \(detail)"
+            return "Could not parse model response: \(detail)"
         case .httpError(let code, let msg):
-            return "Gemini API HTTP \(code): \(msg)"
-        case .cliError(let msg):
-            return "Gemini CLI error: \(msg)"
+            return "API HTTP \(code): \(msg)"
+        case .networkError(let msg):
+            return "Network error: \(msg)"
         }
     }
 }
 
-public final class GeminiService {
-    public static let shared = GeminiService()
+public typealias GeminiServiceError = LLMServiceError
+
+public final class LLMService {
+    public static let shared = LLMService()
 
     private let settings: AppSettings
     private let urlSession: URLSession
@@ -38,22 +43,37 @@ public final class GeminiService {
 
     // MARK: - SHA-256 Paragraph Cache
 
-    public static func cacheKey(for text: String, dialect: EnglishDialect, dictionary: [String]) -> String {
+    public static func cacheKey(
+        for text: String,
+        dialect: EnglishDialect,
+        dictionary: [String],
+        customInstruction: String = ""
+    ) -> String {
         let dictJoined = dictionary.sorted().joined(separator: ",")
-        let payload = "\(dialect.rawValue)|\(dictJoined)|\(text)"
+        let payload = "\(dialect.rawValue)|\(dictJoined)|\(customInstruction)|\(text)"
         let digest = SHA256.hash(data: Data(payload.utf8))
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
     public func cachedIssues(for text: String) -> [WritingIssue]? {
-        let key = Self.cacheKey(for: text, dialect: settings.dialect, dictionary: settings.personalDictionary)
+        let key = Self.cacheKey(
+            for: text,
+            dialect: settings.dialect,
+            dictionary: settings.personalDictionary,
+            customInstruction: settings.customStyleInstruction
+        )
         cacheLock.lock()
         defer { cacheLock.unlock() }
         return cache[key]
     }
 
     public func storeCache(_ issues: [WritingIssue], for text: String) {
-        let key = Self.cacheKey(for: text, dialect: settings.dialect, dictionary: settings.personalDictionary)
+        let key = Self.cacheKey(
+            for: text,
+            dialect: settings.dialect,
+            dictionary: settings.personalDictionary,
+            customInstruction: settings.customStyleInstruction
+        )
         cacheLock.lock()
         defer { cacheLock.unlock() }
         if cache.count >= maxCacheEntries, let firstKey = cache.keys.first {
@@ -129,7 +149,7 @@ public final class GeminiService {
 
     // MARK: - Live Proofread (Structured JSON Issues)
 
-    public func proofread(text: String) async throws -> [WritingIssue] {
+    public func proofread(text: String, model: String? = nil) async throws -> [WritingIssue] {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= 4 else { return [] }
 
@@ -144,7 +164,8 @@ public final class GeminiService {
             customInstruction: settings.customStyleInstruction
         )
 
-        let rawJSON = try await generateJSON(prompt: prompt, model: settings.liveModel, isProofreadSchema: true)
+        let targetModel = model ?? settings.liveModel
+        let rawJSON = try await generateJSON(prompt: prompt, model: targetModel, isProofreadSchema: true)
         let parsed = try Self.parseProofreadJSON(rawJSON)
         let resolved = Self.resolveIssues(parsed.issues, in: text, dictionary: settings.personalDictionary)
 
@@ -154,17 +175,37 @@ public final class GeminiService {
 
     // MARK: - Full Rewrite / Tone Adjustment
 
-    public func rewrite(text: String, preset: RewritePreset, customPrompt: String? = nil) async throws -> String {
-        let instruction = customPrompt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-            ? customPrompt!
-            : preset.instruction
+    public func rewrite(text: String, modifiers: Set<RewriteModifier>, customPrompt: String? = nil, model: String? = nil) async throws -> String {
+        var instructions: [String] = []
+        if let custom = customPrompt?.trimmingCharacters(in: .whitespacesAndNewlines), !custom.isEmpty {
+            instructions.append(custom)
+        }
+        for modifier in RewriteModifier.allCases where modifiers.contains(modifier) {
+            instructions.append(modifier.instruction)
+        }
+        if instructions.isEmpty {
+            instructions.append("Improve clarity, flow, and natural phrasing while strictly preserving all original facts and intent.")
+        }
+
+        let taskDescription = instructions.count > 1
+            ? "Tasks:\n" + instructions.map { "- \($0)" }.joined(separator: "\n")
+            : "Task: \(instructions.first ?? "")"
+
+        let styleLine = settings.customStyleInstruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? ""
+            : "\nAdditional user style / persona rule: \(settings.customStyleInstruction)"
 
         let prompt = """
-        You are Syntly, an expert writing assistant using \(settings.dialect.rawValue).
-        Task: \(instruction)
+        You are Synt(ax)ly, an expert writing assistant using \(settings.dialect.rawValue).
+        \(taskDescription)\(styleLine)
+
+        Guidelines:
+        1. Preserve all core facts, numbers, dates, links, names, and original intent.
+        2. Preserve formatting (bullet points, markdown, line breaks) where applicable unless bullet points are requested.
+        3. Do NOT add conversational preamble, commentary, or quotes.
 
         Return ONLY valid JSON with this exact structure:
-        {"issues": [], "rewrittenText": "<your rewritten text here>"}
+        {"rewrittenText": "<your rewritten text here>"}
 
         Text to rewrite:
         \"\"\"
@@ -172,14 +213,98 @@ public final class GeminiService {
         \"\"\"
         """
 
-        let rawJSON = try await generateJSON(prompt: prompt, model: settings.rewriteModel, isProofreadSchema: true)
-        if let parsed = try? Self.parseProofreadJSON(rawJSON),
+        let targetModel = model ?? settings.rewriteModel
+        let rawJSON = try await generateJSON(prompt: prompt, model: targetModel, isProofreadSchema: true)
+        return Self.extractRewrittenText(from: rawJSON)
+    }
+
+    public func rewrite(text: String, preset: RewritePreset, customPrompt: String? = nil, model: String? = nil) async throws -> String {
+        let instruction = customPrompt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? customPrompt!
+            : preset.instruction
+
+        let styleLine = settings.customStyleInstruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? ""
+            : "\nAdditional user style rule: \(settings.customStyleInstruction)"
+
+        let prompt = """
+        You are Synt(ax)ly, an expert writing assistant using \(settings.dialect.rawValue).
+        Task: \(instruction)\(styleLine)
+
+        Guidelines:
+        1. Preserve all core facts, numbers, dates, links, names, and original intent.
+        2. Preserve formatting (bullet points, markdown, line breaks) where applicable.
+        3. Do NOT add conversational preamble, commentary, or quotes.
+
+        Return ONLY valid JSON with this exact structure:
+        {"rewrittenText": "<your rewritten text here>"}
+
+        Text to rewrite:
+        \"\"\"
+        \(text)
+        \"\"\"
+        """
+
+        let targetModel = model ?? settings.rewriteModel
+        let rawJSON = try await generateJSON(prompt: prompt, model: targetModel, isProofreadSchema: true)
+        return Self.extractRewrittenText(from: rawJSON)
+    }
+
+    /// Robustly extracts the rewritten text string from LLM JSON responses, code fences, or plain text.
+    public static func extractRewrittenText(from rawOutput: String) -> String {
+        let cleaned = extractInnerModelJSON(from: rawOutput)
+
+        // 1. Try decoding via ProofreadResult
+        if let parsed = try? parseProofreadJSON(cleaned),
            let rewritten = parsed.rewrittenText?.trimmingCharacters(in: .whitespacesAndNewlines),
            !rewritten.isEmpty {
             return rewritten
         }
 
-        return Self.stripCodeFences(rawJSON).trimmingCharacters(in: .whitespacesAndNewlines)
+        // 2. Try JSONSerialization dictionary extraction
+        if let data = cleaned.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let text = (obj["rewrittenText"] ?? obj["rewritten_text"] ?? obj["text"] ?? obj["result"] ?? obj["rewritten"] ?? obj["output"]) as? String,
+               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return text.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
+        // 3. Try JSON object slice if wrapped in conversational prose
+        if let firstBrace = cleaned.firstIndex(of: "{"),
+           let lastBrace = cleaned.lastIndex(of: "}") {
+            let slice = String(cleaned[firstBrace...lastBrace])
+            if let sliceData = slice.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: sliceData) as? [String: Any] {
+                if let text = (obj["rewrittenText"] ?? obj["rewritten_text"] ?? obj["text"] ?? obj["result"] ?? obj["rewritten"] ?? obj["output"]) as? String,
+                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return text.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+        }
+
+        // 4. Regex fallback targeting "rewrittenText": "..."
+        if let regex = try? NSRegularExpression(pattern: "\"rewrittenText\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"", options: .caseInsensitive),
+           let match = regex.firstMatch(in: cleaned, options: [], range: NSRange(location: 0, length: (cleaned as NSString).length)) {
+            let nsCleaned = cleaned as NSString
+            let matchRange = match.range(at: 1)
+            if matchRange.location != NSNotFound {
+                let candidate = nsCleaned.substring(with: matchRange)
+                let unescaped = candidate.replacingOccurrences(of: "\\\"", with: "\"")
+                                         .replacingOccurrences(of: "\\n", with: "\n")
+                if !unescaped.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return unescaped.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+        }
+
+        // 5. If it does not look like JSON, it is likely already raw text
+        let trimmed = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.hasPrefix("{") && !trimmed.hasPrefix("[") {
+            return trimmed
+        }
+
+        return trimmed
     }
 
     // MARK: - Prompt Builder & JSON Parser
@@ -198,19 +323,29 @@ public final class GeminiService {
             : "Additional user preference: \(customInstruction)"
 
         return """
-        You are Syntly, a real-time inline writing assistant for \(dialect.rawValue).
-        Analyze the user's text as they type and identify genuine mistakes or high-value improvements.
+        You are Synt(ax)ly, a high-precision real-time inline writing assistant for \(dialect.rawValue).
+        Analyze the text below as the user types it and detect ONLY unambiguous errors or high-value improvements.
         \(dictLine)
         \(styleLine)
 
-        Rules:
-        1. Each issue's "original" field MUST be an exact, verbatim substring from the input text (include 1-3 surrounding words if a single word appears multiple times so its location is unambiguous).
-        2. "replacement" MUST be the exact drop-in replacement for "original".
-        3. "category" MUST be one of: "correctness", "clarity", "tone", "fluency".
-        4. "explanation" MUST be a concise 1-sentence reason (under 15 words).
-        5. If the text has no issues, return {"issues": []}.
-        6. Output ONLY valid JSON matching:
+        CORE PRINCIPLES:
+        1. High Precision & Minimal Edits: Fix genuine mistakes (spelling, grammar, punctuation, misused words). Do NOT rewrite casual, informal, or stylistic phrasing if it is already grammatically valid.
+        2. In-Progress Typing Awareness: The user is actively typing in real-time. Do NOT flag sentence fragments, trailing clauses, or lack of final punctuation at the very end of the input if the sentence appears in-progress.
+        3. Code & Identifier Immunity: Never flag or alter URLs, email addresses, file paths, code snippets, camelCase/snake_case variable names, markdown formatting, or @mentions.
+        4. Unique Verbatim Matching: "original" MUST be an exact, case-sensitive substring from the input text. If a word appears multiple times, include 1–2 adjacent context words so "original" appears EXACTLY ONCE in the text.
+        5. Drop-in Replacement: "replacement" MUST be the exact drop-in replacement for "original" with matching capitalization and punctuation.
+        6. Concise Explanations: "explanation" must be a concise reason under 12 words (e.g. "Use contraction they're instead of possessive their").
+
+        CATEGORIES:
+        - "correctness": Objective spelling, grammar, punctuation, and subject-verb/tense errors.
+        - "clarity": Wordy redundancy or confusing sentence structure.
+        - "tone": Formality or politeness mismatches.
+        - "fluency": Unnatural idioms or non-native phrasing.
+
+        OUTPUT FORMAT:
+        Output ONLY valid JSON matching this exact structure:
         {"issues": [{"original": "...", "replacement": "...", "category": "correctness|clarity|tone|fluency", "explanation": "..."}]}
+        If there are no genuine errors, return: {"issues": []}
 
         Input text:
         \"\"\"
@@ -222,7 +357,7 @@ public final class GeminiService {
     public static func parseProofreadJSON(_ rawOutput: String) throws -> ProofreadResult {
         let cleaned = extractInnerModelJSON(from: rawOutput)
         guard let data = cleaned.data(using: .utf8) else {
-            throw GeminiServiceError.invalidResponse("Non-UTF8 output")
+            throw LLMServiceError.invalidResponse("Non-UTF8 output")
         }
 
         do {
@@ -237,15 +372,14 @@ public final class GeminiService {
                     return decoded
                 }
             }
-            throw GeminiServiceError.invalidResponse(error.localizedDescription)
+            throw LLMServiceError.invalidResponse(error.localizedDescription)
         }
     }
 
-    /// Unwraps Gemini CLI `-o json` outer envelope (`{"response": "..."}`) and strips markdown code fences.
+    /// Unwraps CLI outer envelope (`{"response": "..."}`) and strips markdown code fences.
     public static func extractInnerModelJSON(from text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // Check if this is a Gemini CLI JSON envelope: {"response": "..."}
         if let data = trimmed.data(using: .utf8),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let responseStr = obj["response"] as? String {
@@ -324,253 +458,276 @@ public final class GeminiService {
         return results.sorted { ($0.utf16Location ?? 0) < ($1.utf16Location ?? 0) }
     }
 
-    // MARK: - Transport Dispatch (REST API + CLIProxyAPI + Gemini CLI Bridge)
+    // MARK: - URL Normalization (OpenAI Standard Format)
 
-    private func generateJSON(prompt: String, model: String, isProofreadSchema: Bool) async throws -> String {
-        let apiKey = settings.activeAPIKey()
-        let cliPath = settings.detectedGeminiCLIPath ?? AppSettings.locateGeminiBinary()
+    public static func normalizeChatCompletionsURL(from endpoint: String) -> URL? {
+        let trimmed = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
 
-        switch settings.authMode {
-        case .cliProxy:
-            return try await callCLIProxy(prompt: prompt, model: model, isProofreadSchema: isProofreadSchema)
-
-        case .apiKey:
-            guard let key = apiKey else {
-                throw GeminiServiceError.noAuthenticationAvailable
-            }
-            return try await callDirectREST(prompt: prompt, model: model, apiKey: key, isProofreadSchema: isProofreadSchema)
-
-        case .geminiCLI:
-            guard let path = cliPath else {
-                throw GeminiServiceError.noAuthenticationAvailable
-            }
-            return try await callGeminiCLI(prompt: prompt, model: model, binaryPath: path)
-
-        case .auto:
-            if settings.isCLIProxyReachable {
-                return try await callCLIProxy(prompt: prompt, model: model, isProofreadSchema: isProofreadSchema)
-            } else if let key = apiKey, !key.isEmpty {
-                return try await callDirectREST(prompt: prompt, model: model, apiKey: key, isProofreadSchema: isProofreadSchema)
-            } else if let path = cliPath {
-                return try await callGeminiCLI(prompt: prompt, model: model, binaryPath: path)
-            } else {
-                throw GeminiServiceError.noAuthenticationAvailable
-            }
+        var base = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if !base.lowercased().hasPrefix("http://") && !base.lowercased().hasPrefix("https://") {
+            base = "http://" + base
         }
+
+        if base.hasSuffix("/chat/completions") {
+            return URL(string: base)
+        }
+        if base.hasSuffix("/v1") || base.hasSuffix("/v1beta/openai") || base.hasSuffix("/v1beta") {
+            return URL(string: "\(base)/chat/completions")
+        }
+        return URL(string: "\(base)/v1/chat/completions")
     }
 
-    // MARK: - CLIProxyAPI / Local Proxy (OAuth Google Account, Zero API Key)
+    public static func normalizeModelsURL(from endpoint: String) -> URL? {
+        let trimmed = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
 
-    private func callCLIProxy(
-        prompt: String,
-        model: String,
-        isProofreadSchema: Bool
-    ) async throws -> String {
-        let baseURL = settings.cliProxyBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-
-        // 1. First attempt: Native Gemini REST endpoint via CLIProxyAPI
-        let geminiURLString = "\(baseURL)/v1beta/models/\(model):generateContent"
-        if let url = URL(string: geminiURLString) {
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("Bearer cliproxy", forHTTPHeaderField: "Authorization")
-            request.timeoutInterval = 15
-
-            let generationConfig: [String: Any] = [
-                "temperature": 0.1,
-                "responseMimeType": "application/json"
-            ]
-            let payload: [String: Any] = [
-                "contents": [
-                    ["role": "user", "parts": [["text": prompt]]]
-                ],
-                "generationConfig": generationConfig
-            ]
-            request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-
-            if let (data, response) = try? await urlSession.data(for: request),
-               let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
-                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let candidates = json["candidates"] as? [[String: Any]],
-                   let text = (candidates.first?["content"] as? [String: Any])?["parts"] as? [[String: Any]],
-                   let resultText = text.first?["text"] as? String {
-                    return resultText
-                }
-            }
+        var base = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if !base.lowercased().hasPrefix("http://") && !base.lowercased().hasPrefix("https://") {
+            base = "http://" + base
         }
 
-        // 2. Second attempt / Fallback: Standard OpenAI chat completions endpoint (/v1/chat/completions)
-        let openAIURLString = "\(baseURL)/v1/chat/completions"
-        guard let url = URL(string: openAIURLString) else {
-            throw GeminiServiceError.invalidResponse("Invalid CLIProxy URL")
+        if base.hasSuffix("/chat/completions") {
+            base = String(base.dropLast("/chat/completions".count))
+        }
+        if base.hasSuffix("/v1") || base.hasSuffix("/v1beta/openai") || base.hasSuffix("/v1beta") {
+            return URL(string: "\(base)/models")
+        }
+        return URL(string: "\(base)/v1/models")
+    }
+
+    // MARK: - Universal Model Dispatch (OpenAI Chat Completions Protocol)
+
+    private func generateJSON(prompt: String, model: String, isProofreadSchema: Bool) async throws -> String {
+        let endpoint = settings.apiEndpoint
+        guard let url = Self.normalizeChatCompletionsURL(from: endpoint) else {
+            throw LLMServiceError.invalidURL(endpoint)
         }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer cliproxy", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 15
+        request.timeoutInterval = 25
 
-        let payload: [String: Any] = [
+        if let token = settings.activeAPIToken(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+
+        var payload: [String: Any] = [
             "model": model,
             "messages": [
+                ["role": "system", "content": "You are Synt(ax)ly, an expert AI writing assistant. You must return valid JSON only."],
                 ["role": "user", "content": prompt]
             ],
-            "response_format": ["type": "json_object"],
-            "temperature": 0.1
+            "temperature": 0.1,
+            "response_format": ["type": "json_object"]
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
         let (data, response) = try await urlSession.data(for: request)
         guard let http = response as? HTTPURLResponse else {
-            throw GeminiServiceError.invalidResponse("No response from CLIProxyAPI at \(baseURL)")
+            throw LLMServiceError.invalidResponse("No HTTP response received from \(endpoint)")
+        }
+
+        // Graceful fallback: If server rejects response_format (HTTP 400), retry without it
+        if http.statusCode == 400 {
+            let errBody = String(data: data, encoding: .utf8) ?? ""
+            if errBody.localizedCaseInsensitiveContains("response_format") {
+                payload.removeValue(forKey: "response_format")
+                request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+                let (retryData, retryResp) = try await urlSession.data(for: request)
+                if let retryHttp = retryResp as? HTTPURLResponse, (200...299).contains(retryHttp.statusCode) {
+                    return try Self.parseContentFromAnyResponse(data: retryData)
+                }
+            }
         }
 
         guard (200...299).contains(http.statusCode) else {
             let bodyText = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
-            throw GeminiServiceError.httpError(statusCode: http.statusCode, message: "CLIProxy error: \(bodyText)")
+            let concise = Self.extractConciseErrorMessage(from: bodyText, statusCode: http.statusCode)
+            throw LLMServiceError.httpError(statusCode: http.statusCode, message: concise)
         }
 
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]],
-              let message = choices.first?["message"] as? [String: Any],
-              let content = message["content"] as? String else {
-            throw GeminiServiceError.invalidResponse("Malformed response from CLIProxyAPI")
-        }
-
-        return content
+        return try Self.parseContentFromAnyResponse(data: data)
     }
 
-    // MARK: - Direct Gemini REST API (`generativelanguage.googleapis.com`)
+    // MARK: - Multi-format Response Extractor
 
-    private func callDirectREST(
-        prompt: String,
-        model: String,
-        apiKey: String,
-        isProofreadSchema: Bool
-    ) async throws -> String {
-        let urlString = "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent?key=\(apiKey)"
-        guard let url = URL(string: urlString) else {
-            throw GeminiServiceError.invalidResponse("Malformed URL")
+    public static func parseContentFromAnyResponse(data: Data) throws -> String {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            let text = String(data: data, encoding: .utf8) ?? ""
+            if !text.isEmpty {
+                return extractInnerModelJSON(from: text)
+            }
+            throw LLMServiceError.invalidResponse("Empty or non-JSON response from API")
         }
 
-        var generationConfig: [String: Any] = [
-            "temperature": 0.1,
-            "responseMimeType": "application/json",
-            "thinkingConfig": ["thinkingBudget": 0]
-        ]
-
-        if isProofreadSchema {
-            generationConfig["responseSchema"] = [
-                "type": "OBJECT",
-                "properties": [
-                    "issues": [
-                        "type": "ARRAY",
-                        "items": [
-                            "type": "OBJECT",
-                            "properties": [
-                                "original": ["type": "STRING"],
-                                "replacement": ["type": "STRING"],
-                                "category": ["type": "STRING"],
-                                "explanation": ["type": "STRING"]
-                            ],
-                            "required": ["original", "replacement", "category", "explanation"]
-                        ]
-                    ],
-                    "rewrittenText": ["type": "STRING"]
-                ],
-                "required": ["issues"]
-            ]
+        // 1. OpenAI Chat Completion format: choices[0].message.content
+        if let choices = json["choices"] as? [[String: Any]], let first = choices.first {
+            if let message = first["message"] as? [String: Any] {
+                if let content = message["content"] as? String {
+                    return extractInnerModelJSON(from: content)
+                }
+                if let contentArray = message["content"] as? [[String: Any]] {
+                    let textParts = contentArray.compactMap { $0["text"] as? String }
+                    if !textParts.isEmpty {
+                        return extractInnerModelJSON(from: textParts.joined(separator: "\n"))
+                    }
+                }
+            }
+            if let text = first["text"] as? String {
+                return extractInnerModelJSON(from: text)
+            }
         }
 
-        let payload: [String: Any] = [
-            "contents": [
-                [
-                    "role": "user",
-                    "parts": [["text": prompt]]
-                ]
-            ],
-            "generationConfig": generationConfig
-        ]
+        // 2. Google Gemini direct format: candidates[0].content.parts[0].text
+        if let candidates = json["candidates"] as? [[String: Any]],
+           let first = candidates.first,
+           let content = first["content"] as? [String: Any],
+           let parts = content["parts"] as? [[String: Any]],
+           let text = parts.first?["text"] as? String {
+            return extractInnerModelJSON(from: text)
+        }
+
+        // 3. Fallback: single "response" or "text" key
+        if let responseStr = json["response"] as? String {
+            return extractInnerModelJSON(from: responseStr)
+        }
+        if let textStr = json["text"] as? String {
+            return extractInnerModelJSON(from: textStr)
+        }
+
+        let rawStr = String(data: data, encoding: .utf8) ?? ""
+        return extractInnerModelJSON(from: rawStr)
+    }
+
+    // MARK: - Test Connection & Model Discovery
+
+    public func testConnection(endpoint: String, token: String?, model: String) async -> ConnectionTestState {
+        guard let url = Self.normalizeChatCompletionsURL(from: endpoint) else {
+            return .failure(message: "Invalid endpoint URL: \(endpoint)")
+        }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 15
-        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        request.timeoutInterval = 8
+
+        if let token = token?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+
+        let payload: [String: Any] = [
+            "model": model,
+            "messages": [
+                ["role": "user", "content": "Ping test. Respond with: {\"status\": \"ok\"}"]
+            ],
+            "max_tokens": 15
+        ]
+        guard let body = try? JSONSerialization.data(withJSONObject: payload) else {
+            return .failure(message: "Failed to serialize test payload")
+        }
+        request.httpBody = body
+
+        let startTime = CFAbsoluteTimeGetCurrent()
+        do {
+            let (data, response) = try await urlSession.data(for: request)
+            let latencyMs = max(1, Int((CFAbsoluteTimeGetCurrent() - startTime) * 1000))
+            guard let http = response as? HTTPURLResponse else {
+                return .failure(message: "No HTTP response received")
+            }
+
+            if (200...299).contains(http.statusCode) {
+                return .success(
+                    latencyMs: latencyMs,
+                    model: model,
+                    details: "Connected in \(latencyMs)ms! Model '\(model)' is responding."
+                )
+            } else {
+                let bodyStr = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+                let concise = Self.extractConciseErrorMessage(from: bodyStr, statusCode: http.statusCode)
+                return .failure(message: concise)
+            }
+        } catch {
+            if let urlErr = error as? URLError {
+                if urlErr.code == .cannotConnectToHost {
+                    return .failure(message: "Could not connect to host at \(url.host ?? endpoint). Make sure your server/proxy is running.")
+                } else if urlErr.code == .timedOut {
+                    return .failure(message: "Connection timed out after 8s. Verify endpoint URL.")
+                }
+            }
+            return .failure(message: error.localizedDescription)
+        }
+    }
+
+    public func fetchAvailableModels(endpoint: String, token: String?) async throws -> [String] {
+        guard let url = Self.normalizeModelsURL(from: endpoint) else {
+            throw LLMServiceError.invalidURL(endpoint)
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 6
+
+        if let token = token?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
 
         let (data, response) = try await urlSession.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw GeminiServiceError.invalidResponse("No HTTP response")
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            let str = String(data: data, encoding: .utf8) ?? ""
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            throw LLMServiceError.httpError(statusCode: code, message: Self.extractConciseErrorMessage(from: str, statusCode: code))
         }
 
-        guard (200...299).contains(http.statusCode) else {
-            let bodyText = String(data: data, encoding: .utf8) ?? "Unknown error"
-            if let errJson = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let errObj = errJson["error"] as? [String: Any],
-               let errMsg = errObj["message"] as? String {
-                if http.statusCode == 403 && errMsg.contains("has not been used in project") {
-                    throw GeminiServiceError.httpError(
-                        statusCode: 403,
-                        message: "Gemini API is not enabled on this Google project. Enable it at:\nhttps://console.developers.google.com/apis/api/generativelanguage.googleapis.com/overview\n\nOr create a key with 'Create API key in new project' at Google AI Studio."
-                    )
+        var modelIDs: [String] = []
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            // OpenAI format: {"data": [{"id": "model-id"}, ...]}
+            if let list = json["data"] as? [[String: Any]] {
+                for item in list {
+                    if let id = item["id"] as? String, !id.isEmpty {
+                        modelIDs.append(id)
+                    }
                 }
-                throw GeminiServiceError.httpError(statusCode: http.statusCode, message: errMsg)
             }
-            throw GeminiServiceError.httpError(statusCode: http.statusCode, message: bodyText)
+            // Ollama format: {"models": [{"name": "model:tag"}, ...]}
+            if let models = json["models"] as? [[String: Any]] {
+                for item in models {
+                    if let name = item["name"] as? String, !name.isEmpty {
+                        modelIDs.append(name)
+                    }
+                }
+            }
         }
-
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let candidates = json["candidates"] as? [[String: Any]],
-              let firstCandidate = candidates.first,
-              let content = firstCandidate["content"] as? [String: Any],
-              let parts = content["parts"] as? [[String: Any]],
-              let text = parts.first?["text"] as? String else {
-            throw GeminiServiceError.invalidResponse("Missing candidate text in REST response")
-        }
-
-        return text
+        return modelIDs.sorted()
     }
 
-    // MARK: - Local Gemini CLI Bridge (Single-Turn, Zero Tools)
-
-    private func callGeminiCLI(prompt: String, model: String, binaryPath: String) async throws -> String {
-        return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: binaryPath)
-                // Run in non-interactive headless JSON mode with extensions disabled so 1 check = 1 request
-                process.arguments = [
-                    "-m", model,
-                    "-p", prompt,
-                    "-o", "json",
-                    "-e", "none"
-                ]
-
-                let stdoutPipe = Pipe()
-                let stderrPipe = Pipe()
-                process.standardOutput = stdoutPipe
-                process.standardError = stderrPipe
-
-                do {
-                    try process.run()
-                    process.waitUntilExit()
-
-                    let outData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                    let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-                    let outStr = String(data: outData, encoding: .utf8) ?? ""
-                    let errStr = String(data: errData, encoding: .utf8) ?? ""
-
-                    if process.terminationStatus == 0 && !outStr.isEmpty {
-                        continuation.resume(returning: outStr)
-                    } else {
-                        continuation.resume(throwing: GeminiServiceError.cliError(errStr.isEmpty ? outStr : errStr))
-                    }
-                } catch {
-                    continuation.resume(throwing: GeminiServiceError.cliError(error.localizedDescription))
-                }
+    public static func extractConciseErrorMessage(from body: String, statusCode: Int) -> String {
+        if let data = body.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let errObj = json["error"] as? [String: Any], let msg = errObj["message"] as? String {
+                return "HTTP \(statusCode): \(msg)"
+            }
+            if let errStr = json["error"] as? String {
+                return "HTTP \(statusCode): \(errStr)"
+            }
+            if let msg = json["message"] as? String {
+                return "HTTP \(statusCode): \(msg)"
             }
         }
+        if statusCode == 401 {
+            return "HTTP 401 Unauthorized: Invalid or missing API token."
+        }
+        if statusCode == 404 {
+            return "HTTP 404 Not Found: Check endpoint URL or model name."
+        }
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count > 120 {
+            return "HTTP \(statusCode): \(trimmed.prefix(120))…"
+        }
+        return "HTTP \(statusCode): \(trimmed)"
     }
 }
+
+// Backward-compatible alias
+public typealias GeminiService = LLMService

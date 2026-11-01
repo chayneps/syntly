@@ -7,17 +7,18 @@ import Security
 /// with graceful fallback to system Keychain when needed.
 public enum KeychainHelper {
     private static let service = "dev.syntly.app"
-    private static let apiKeyAccount = "gemini_api_key"
+    private static let apiKeyAccount = "syntly_api_token"
+    private static let legacyAccount = "gemini_api_key"
 
     private static var configURL: URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return home.appendingPathComponent(".config/syntly/credentials.json")
     }
 
-    public static func saveAPIKey(_ key: String) -> Bool {
+    public static func saveAPIToken(_ key: String) -> Bool {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            return deleteAPIKey()
+            return deleteAPIToken()
         }
 
         // 1. Save to ~/.config/syntly/credentials.json with POSIX 0600 permissions
@@ -40,47 +41,57 @@ public enum KeychainHelper {
         return fileSaved
     }
 
-    public static func loadAPIKey() -> String? {
+    public static func loadAPIToken() -> String? {
         // 1. Try ~/.config/syntly/credentials.json first (fast, zero macOS password prompts)
         if let fileKey = loadFromFile(), !fileKey.isEmpty {
             return fileKey
         }
 
-        // 2. Fallback to macOS Keychain
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: apiKeyAccount,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
+        // 2. Fallback to macOS Keychain (try current account, then legacy account)
+        for account in [apiKeyAccount, legacyAccount] {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account,
+                kSecReturnData as String: true,
+                kSecMatchLimit as String: kSecMatchLimitOne
+            ]
 
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status == errSecSuccess,
-              let data = item as? Data,
-              let str = String(data: data, encoding: .utf8),
-              !str.isEmpty else {
-            return nil
+            var item: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &item)
+            if status == errSecSuccess,
+               let data = item as? Data,
+               let str = String(data: data, encoding: .utf8),
+               !str.isEmpty {
+                return str
+            }
         }
-        return str
+        return nil
     }
 
     @discardableResult
-    public static func deleteAPIKey() -> Bool {
+    public static func deleteAPIToken() -> Bool {
         // Delete file
         let url = configURL
         try? FileManager.default.removeItem(at: url)
 
         // Delete from Keychain
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: apiKeyAccount
-        ]
-        let status = SecItemDelete(query as CFDictionary)
-        return status == errSecSuccess || status == errSecItemNotFound
+        for account in [apiKeyAccount, legacyAccount] {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account
+            ]
+            _ = SecItemDelete(query as CFDictionary)
+        }
+        return true
     }
+
+    // Backwards-compatible aliases
+    public static func saveAPIKey(_ key: String) -> Bool { saveAPIToken(key) }
+    public static func loadAPIKey() -> String? { loadAPIToken() }
+    @discardableResult
+    public static func deleteAPIKey() -> Bool { deleteAPIToken() }
 
     private static func saveToFile(_ key: String) -> Bool {
         let url = configURL
@@ -89,7 +100,7 @@ public enum KeychainHelper {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [
                 .posixPermissions: 0o700
             ])
-            let json = try JSONSerialization.data(withJSONObject: ["gemini_api_key": key], options: [.prettyPrinted])
+            let json = try JSONSerialization.data(withJSONObject: ["api_token": key, "gemini_api_key": key], options: [.prettyPrinted])
             try json.write(to: url, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
             return true
@@ -102,11 +113,15 @@ public enum KeychainHelper {
         let url = configURL
         guard FileManager.default.fileExists(atPath: url.path),
               let data = try? Data(contentsOf: url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let key = obj["gemini_api_key"] as? String,
-              !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }
-        return key.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let token = obj["api_token"] as? String, !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return token.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let key = obj["gemini_api_key"] as? String, !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return key.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return nil
     }
 }

@@ -11,11 +11,10 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
     @Published public private(set) var issues: [WritingIssue] = []
     @Published public private(set) var pillState: PillVisualState = .allClear
     @Published public var isPopoverExpanded: Bool = false
+    @Published public var isRewriteTabActive: Bool = false
     @Published public var isRewriting: Bool = false
     @Published public var rewrittenPreview: String?
     @Published public var customRewritePrompt: String = ""
-    @Published public private(set) var totalChecksCount: Int = 0
-    @Published public private(set) var totalFixesApplied: Int = 0
     @Published public private(set) var lastErrorMessage: String?
 
     private let axEngine: AXEngine
@@ -64,7 +63,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
 
     public func simulateDemoPillOnScreen() {
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let anchor = CGPoint(x: screen.midX + 100, y: screen.midY)
+        let anchor = CGPoint(x: screen.midX - 220, y: screen.midY + 140)
         let demoContext = FocusedTextContext(
             appName: "Demo Preview",
             bundleID: "dev.syntly.demo",
@@ -224,7 +223,6 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             guard !Task.isCancelled else { return }
 
             lastAnalyzedParagraph = text
-            totalChecksCount += 1
             lastErrorMessage = nil
 
             var combined = aiIssues.filter { !dismissedOriginals.contains($0.original) }
@@ -256,27 +254,68 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
 
     // MARK: - User Actions on Issues & Rewrites
 
+    public var onIssueAccepted: ((WritingIssue) -> Void)?
+    public var onAllIssuesAccepted: (([WritingIssue], String) -> Void)?
+
     public func acceptIssue(_ issue: WritingIssue) {
         let currentText = currentContext?.fullText ?? lastAnalyzedParagraph
-        let applied = axEngine.applyIssueReplacement(issue, in: currentText)
-        if applied {
-            totalFixesApplied += 1
+        _ = axEngine.applyIssueReplacement(issue, in: currentText)
+
+        onIssueAccepted?(issue)
+
+        if currentContext?.bundleID == "dev.syntly.demo",
+           let current = currentContext {
+            if let range = current.fullText.range(of: issue.original) {
+                var updated = current.fullText
+                updated.replaceSubrange(range, with: issue.replacement)
+                self.currentContext = FocusedTextContext(
+                    appName: current.appName,
+                    bundleID: current.bundleID,
+                    pid: current.pid,
+                    fullText: updated,
+                    selectedText: current.selectedText,
+                    selectedRange: current.selectedRange,
+                    anchorAppKitPoint: current.anchorAppKitPoint
+                )
+            }
         }
+
         issues.removeAll { $0.id == issue.id }
         updatePillStateFromIssues()
+
+        if issues.isEmpty && isPopoverExpanded {
+            isPopoverExpanded = false
+            onOverlayStateChanged?()
+        }
     }
 
     public func acceptAllIssues() {
         guard var workingText = currentContext?.fullText ?? (lastAnalyzedParagraph.isEmpty ? nil : lastAnalyzedParagraph) else {
             return
         }
+        let accepted = self.issues
         for issue in issues {
             if let range = workingText.range(of: issue.original) {
                 workingText.replaceSubrange(range, with: issue.replacement)
-                totalFixesApplied += 1
             }
         }
         _ = axEngine.replaceSelectedOrFullText(with: workingText)
+
+        onAllIssuesAccepted?(accepted, workingText)
+
+        if currentContext?.bundleID == "dev.syntly.demo",
+           let current = currentContext {
+            self.currentContext = FocusedTextContext(
+                appName: current.appName,
+                bundleID: current.bundleID,
+                pid: current.pid,
+                fullText: workingText,
+                selectedText: current.selectedText,
+                selectedRange: current.selectedRange,
+                anchorAppKitPoint: current.anchorAppKitPoint
+            )
+        }
+
         issues.removeAll()
         updatePillStateFromIssues()
     }
@@ -285,6 +324,11 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         dismissedOriginals.insert(issue.original)
         issues.removeAll { $0.id == issue.id }
         updatePillStateFromIssues()
+
+        if issues.isEmpty && isPopoverExpanded {
+            isPopoverExpanded = false
+            onOverlayStateChanged?()
+        }
     }
 
     public func addIssueWordToDictionary(_ issue: WritingIssue) {
@@ -310,7 +354,6 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             do {
                 let result = try await geminiService.rewrite(text: targetText, preset: preset, customPrompt: customPrompt)
                 self.rewrittenPreview = result
-                self.totalChecksCount += 1
                 self.lastErrorMessage = nil
             } catch {
                 self.lastErrorMessage = error.localizedDescription
@@ -322,9 +365,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
 
     public func applyRewrittenPreview() {
         guard let preview = rewrittenPreview else { return }
-        if axEngine.replaceSelectedOrFullText(with: preview) {
-            totalFixesApplied += 1
-        }
+        _ = axEngine.replaceSelectedOrFullText(with: preview)
         rewrittenPreview = nil
         isPopoverExpanded = false
         onOverlayStateChanged?()

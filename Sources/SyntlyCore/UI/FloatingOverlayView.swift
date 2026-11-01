@@ -3,6 +3,8 @@ import SwiftUI
 public struct FloatingOverlayView: View {
     @ObservedObject var coordinator: WritingAssistantCoordinator
     @State private var selectedTab: OverlayTab = .suggestions
+    @State private var isHovered: Bool = false
+    @State private var hasPushedCursor: Bool = false
 
     public enum OverlayTab: String, CaseIterable {
         case suggestions = "Suggestions"
@@ -18,96 +20,138 @@ public struct FloatingOverlayView: View {
             if coordinator.isPopoverExpanded {
                 expandedCardView
             } else {
-                compactPillView
+                compactIconView
             }
         }
         .frame(
-            width: coordinator.isPopoverExpanded ? 380 : 150,
-            height: coordinator.isPopoverExpanded ? 348 : 44
+            width: coordinator.isPopoverExpanded ? 380 : 48,
+            height: coordinator.isPopoverExpanded ? 348 : 48
         )
     }
 
-    // MARK: - Compact Corner Status Pill
+    // MARK: - Compact Top-Left Floating Icon (Manga Thought Bubble)
 
-    private var compactPillView: some View {
-        HStack(spacing: 6) {
-            Button {
-                coordinator.isPopoverExpanded = true
-                coordinator.onOverlayStateChanged?()
-            } label: {
-                HStack(spacing: 6) {
-                    pillStatusIcon
-                    Text(pillStatusLabel)
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
+    private var compactIconView: some View {
+        ZStack(alignment: .topTrailing) {
+            // 1. Center Manga Thought Bubble App Icon
+            Group {
+                if let iconImg = loadAppIconImage() {
+                    Image(nsImage: iconImg)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                } else {
+                    // High-contrast fallback manga thought bubble in bright hot pink
+                    ZStack {
+                        Circle()
+                            .fill(Color(red: 0.996, green: 0.008, blue: 0.890))
+                        Text("S")
+                            .font(.system(size: 20, weight: .heavy, design: .rounded))
+                            .foregroundStyle(.white)
+                    }
                 }
-                .padding(.horizontal, 11)
-                .padding(.vertical, 6)
-                .background(.ultraThinMaterial, in: Capsule())
-                .overlay(
-                    Capsule()
-                        .strokeBorder(pillBorderColor.opacity(0.65), lineWidth: 1.2)
-                )
             }
-            .buttonStyle(.plain)
-            .help("Click to open Syntly suggestions (⌘⇧G) • Quick-accept top fix (⌥Tab)")
+            .frame(width: 36, height: 36)
+            .scaleEffect(isHovered ? 1.08 : 1.0)
+            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isHovered)
+
+            // 2. Status Badge / Spinner
+            statusBadgeOverlay
         }
-        .frame(width: 150, height: 44)
+        .frame(width: 48, height: 48)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovered = hovering
+            if hovering && !hasPushedCursor {
+                hasPushedCursor = true
+                NSCursor.openHand.push()
+            } else if !hovering && hasPushedCursor {
+                hasPushedCursor = false
+                NSCursor.pop()
+            }
+        }
+        .onDisappear {
+            if hasPushedCursor {
+                hasPushedCursor = false
+                NSCursor.pop()
+            }
+        }
+        .help(tooltipText)
+    }
+
+    private var tooltipText: String {
+        switch coordinator.pillState {
+        case .allClear:
+            return "Synt(ax)ly — All Clear • Drag to move • Click to open (⌘⇧G) • Double-click to reset"
+        case .checking:
+            return "Synt(ax)ly — Checking your writing… • Drag to move"
+        case .issuesFound(let count, _):
+            return "Synt(ax)ly — \(count) fix\(count == 1 ? "" : "es") found • Quick-accept: ⌥Tab • Drag to move • Click to view (⌘⇧G)"
+        case .paused:
+            return "Synt(ax)ly — Paused • Click to resume • Drag to move"
+        case .error:
+            return "Synt(ax)ly — Connection issue • Click to inspect • Drag to move"
+        }
     }
 
     @ViewBuilder
-    private var pillStatusIcon: some View {
+    private var statusBadgeOverlay: some View {
         switch coordinator.pillState {
         case .allClear:
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
+                .background(Circle().fill(.white).padding(1.5))
                 .font(.system(size: 13, weight: .bold))
+                .offset(x: 4, y: -4)
+
         case .checking:
-            ProgressView()
-                .controlSize(.small)
-                .scaleEffect(0.7)
+            MangaThinkingDotsBadge()
+                .offset(x: 6, y: -5)
+
         case .issuesFound(let count, let topCategory):
             Text("\(count)")
-                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .font(.system(size: 10, weight: .heavy, design: .rounded))
                 .foregroundStyle(.white)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 1.5)
+                .frame(minWidth: 16, minHeight: 16)
+                .padding(.horizontal, 3)
                 .background(topCategory.badgeColor, in: Capsule())
+                .overlay(Capsule().strokeBorder(.white, lineWidth: 1.5))
+                .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+                .offset(x: 5, y: -5)
+
         case .paused:
             Image(systemName: "pause.circle.fill")
                 .foregroundStyle(.secondary)
+                .background(Circle().fill(.white).padding(1.5))
                 .font(.system(size: 13))
+                .offset(x: 4, y: -4)
+
         case .error:
-            Image(systemName: "exclamationmark.triangle.fill")
+            Image(systemName: "exclamationmark.circle.fill")
                 .foregroundStyle(.orange)
+                .background(Circle().fill(.white).padding(1.5))
                 .font(.system(size: 13))
+                .offset(x: 4, y: -4)
         }
     }
 
-    private var pillStatusLabel: String {
-        switch coordinator.pillState {
-        case .allClear:
-            return "Syntly"
-        case .checking:
-            return "Checking…"
-        case .issuesFound(let count, _):
-            return count == 1 ? "1 fix" : "\(count) fixes"
-        case .paused:
-            return "Paused"
-        case .error:
-            return "Retry"
+    private func loadAppIconImage() -> NSImage? {
+        if let img = NSApp.applicationIconImage, img.isValid {
+            return img
         }
-    }
-
-    private var pillBorderColor: Color {
-        switch coordinator.pillState {
-        case .allClear: return .green
-        case .checking: return .blue
-        case .issuesFound(_, let topCategory): return topCategory.badgeColor
-        case .paused: return .gray
-        case .error: return .orange
+        if let url = Bundle.main.url(forResource: "app_icon_1024", withExtension: "png"),
+           let img = NSImage(contentsOf: url) {
+            return img
         }
+        let devPath = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("assets/app_icon_1024.png")
+        if let img = NSImage(contentsOf: devPath) {
+            return img
+        }
+        return nil
     }
 
     // MARK: - Expanded Suggestion & Rewrite Card
@@ -123,6 +167,10 @@ public struct FloatingOverlayView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .onChange(of: selectedTab) { _, newTab in
+                coordinator.isRewriteTabActive = (newTab == .rewrite)
+                coordinator.onOverlayStateChanged?()
+            }
 
             if selectedTab == .suggestions {
                 suggestionsListContent
@@ -142,16 +190,37 @@ public struct FloatingOverlayView: View {
     }
 
     private var headerBar: some View {
-        HStack {
-            Image(systemName: "sparkles")
-                .foregroundStyle(.blue)
-            Text("Syntly Writing Assistant")
-                .font(.system(size: 13, weight: .bold))
+        HStack(alignment: .top, spacing: 8) {
+            if let iconImg = loadAppIconImage() {
+                Image(nsImage: iconImg)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 20, height: 20)
+            }
 
-            if let appName = coordinator.currentContext?.appName {
-                Text("• \(appName)")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text("Synt(ax)ly Writing Assistant")
+                        .font(.system(size: 13, weight: .bold))
+
+                    if let appName = coordinator.currentContext?.appName {
+                        Text("• \(appName)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                // Show model name for when you type (or rewrite)
+                HStack(spacing: 4) {
+                    Image(systemName: selectedTab == .suggestions ? "bolt.fill" : "wand.and.stars")
+                        .font(.system(size: 9))
+                        .foregroundStyle(selectedTab == .suggestions ? .blue : .purple)
+                    Text(selectedTab == .suggestions
+                         ? "Type Model: \(coordinator.settings.liveModel)"
+                         : "Rewrite Model: \(coordinator.settings.rewriteModel.isEmpty ? coordinator.settings.liveModel : coordinator.settings.rewriteModel)")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                }
+                .foregroundStyle(.secondary)
             }
 
             Spacer()
@@ -181,10 +250,11 @@ public struct FloatingOverlayView: View {
     @ViewBuilder
     private var suggestionsListContent: some View {
         if coordinator.pillState == .checking && coordinator.issues.isEmpty {
-            VStack(spacing: 10) {
+            VStack(spacing: 12) {
                 Spacer()
-                ProgressView()
-                Text("Analyzing your writing with Gemini…")
+                MangaThinkingDotsBadge()
+                    .scaleEffect(1.25)
+                Text("Analyzing your writing…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -198,7 +268,7 @@ public struct FloatingOverlayView: View {
                     .foregroundStyle(.green)
                 Text("Looks clear and polished!")
                     .font(.system(size: 13, weight: .semibold))
-                Text("Keep typing—Syntly checks your sentences automatically.")
+                Text("Keep typing—Synt(ax)ly checks your sentences automatically.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -262,7 +332,7 @@ public struct FloatingOverlayView: View {
             if coordinator.isRewriting {
                 VStack {
                     Spacer()
-                    ProgressView("Rewriting with Gemini…")
+                    ProgressView("Rewriting…")
                         .font(.caption)
                     Spacer()
                 }
@@ -320,7 +390,7 @@ public struct FloatingOverlayView: View {
                             coordinator.triggerImmediateCheck(for: para)
                         }
                     }
-                    Button("Pause Syntly for 1 Hour") {
+                    Button("Pause Synt(ax)ly for 1 Hour") {
                         coordinator.settings.pauseForOneHour()
                         coordinator.isPopoverExpanded = false
                         coordinator.onOverlayStateChanged?()
@@ -417,5 +487,37 @@ struct IssueCardRow: View {
         }
         .padding(9)
         .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+// MARK: - Animated Manga Thinking Dots Badge (•••)
+
+public struct MangaThinkingDotsBadge: View {
+    public init() {}
+
+    public var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+            let time = timeline.date.timeIntervalSinceReferenceDate
+            HStack(spacing: 2.2) {
+                ForEach(0..<3) { i in
+                    let offset = sin((time * 6.8) - Double(i) * 1.1) * 2.0
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: 3.2, height: 3.2)
+                        .offset(y: -offset)
+                }
+            }
+            .padding(.horizontal, 4.5)
+            .padding(.vertical, 3.2)
+            .background(
+                Capsule()
+                    .fill(Color(red: 0.14, green: 0.10, blue: 0.22))
+            )
+            .overlay(
+                Capsule()
+                    .strokeBorder(Color.white.opacity(0.95), lineWidth: 1.2)
+            )
+            .shadow(color: Color.black.opacity(0.35), radius: 2, x: 0, y: 1)
+        }
     }
 }
