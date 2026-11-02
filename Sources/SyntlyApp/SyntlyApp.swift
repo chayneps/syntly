@@ -461,10 +461,10 @@ struct InContextTypingScreenshotView: View {
 
                 Divider()
 
-                // Editor Workspace + Floating Syntly Overlay
-                HStack(alignment: .top, spacing: 16) {
-                    // Left Column: Active Typing Document
-                    VStack(alignment: .leading, spacing: 18) {
+                // Editor Workspace + Floating Syntly Overlay (ZStack overlay so it truly floats)
+                ZStack(alignment: .topTrailing) {
+                    // Full Background: Active Typing Document
+                    VStack(alignment: .leading, spacing: 20) {
                         Text("Hi Alex,")
                             .font(.system(size: 16))
                             .foregroundStyle(.primary)
@@ -474,7 +474,7 @@ struct InContextTypingScreenshotView: View {
                             .foregroundStyle(.primary)
 
                         // Sentences with active inline corrections in red and green
-                        VStack(alignment: .leading, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 14) {
                             HStack(alignment: .center, spacing: 6) {
                                 Text("Due to the fact that")
                                     .font(.system(size: 15))
@@ -520,7 +520,7 @@ struct InContextTypingScreenshotView: View {
                             HStack(spacing: 5) {
                                 Image(systemName: "sparkles")
                                     .foregroundStyle(.purple)
-                                Text("Synt(ax)ly active • Instant corrections as you write")
+                                Text("Synt(ax)ly active • Instant corrections as you write in Notes")
                                     .font(.system(size: 11, weight: .medium))
                                     .foregroundStyle(.secondary)
                             }
@@ -530,41 +530,67 @@ struct InContextTypingScreenshotView: View {
                                 .foregroundStyle(.tertiary)
                         }
                     }
-                    .padding(22)
+                    .padding(26)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .background(Color(red: 0.10, green: 0.12, blue: 0.15))
 
-                    // Right Column: Synt(ax)ly Floating Pill & Popover Card
-                    VStack(alignment: .trailing, spacing: 8) {
-                        // Floating Pill docked near typing caret
-                        HStack(spacing: 8) {
-                            Text("Floating Near Caret")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(.secondary)
-
+                    // Floating Over Document: The Synt(ax)ly Floating Pill & Popover Card
+                    VStack(alignment: .trailing, spacing: 10) {
+                        // 1. Prominent Floating Pill
+                        HStack(spacing: 10) {
                             ZStack(alignment: .topTrailing) {
-                                Image(nsImage: StatusBarController.renderMangaBubble(size: 36))
-                                    .resizable()
-                                    .frame(width: 36, height: 36)
+                                Circle()
+                                    .fill(Color(red: 0.996, green: 0.008, blue: 0.890))
+                                    .frame(width: 32, height: 32)
+                                Text("S")
+                                    .font(.system(size: 17, weight: .black, design: .rounded))
+                                    .foregroundStyle(.white)
 
                                 Text("2")
                                     .font(.system(size: 10, weight: .heavy, design: .rounded))
                                     .foregroundStyle(.white)
                                     .frame(minWidth: 16, minHeight: 16)
-                                    .background(Color(red: 1.0, green: 0.32, blue: 0.32), in: Capsule())
+                                    .background(Color(red: 1.0, green: 0.25, blue: 0.25), in: Capsule())
                                     .overlay(Capsule().strokeBorder(.white, lineWidth: 1.5))
                                     .offset(x: 4, y: -4)
                             }
-                            .shadow(color: .black.opacity(0.35), radius: 5, y: 3)
-                        }
 
-                        // The live suggestions popover card
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Synt(ax)ly Floating Pill")
+                                    .font(.system(size: 12, weight: .bold))
+                                    .foregroundStyle(.white)
+                                Text("Docked near active cursor")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer()
+
+                            Text("⌥Tab to Fix")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.blue.opacity(0.3), in: Capsule())
+                                .overlay(Capsule().strokeBorder(Color.blue.opacity(0.6), lineWidth: 1))
+                                .foregroundStyle(Color(red: 0.4, green: 0.7, blue: 1.0))
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .frame(width: 380)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.22), lineWidth: 1)
+                        )
+                        .shadow(color: .black.opacity(0.5), radius: 10, y: 5)
+
+                        // 2. The live suggestions popover card
                         FloatingOverlayView(coordinator: coordinator)
                             .frame(width: 380, height: 350)
-                            .shadow(color: .black.opacity(0.45), radius: 14, y: 8)
+                            .shadow(color: .black.opacity(0.6), radius: 20, y: 10)
                     }
-                    .padding(.trailing, 18)
-                    .padding(.top, 14)
+                    .padding(.trailing, 22)
+                    .padding(.top, 18)
                 }
             }
             .frame(width: 1000, height: 580)

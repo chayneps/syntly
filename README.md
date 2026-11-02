@@ -31,25 +31,22 @@ Download the ready-to-run DMG installer for version **v1 (1.0.0)** directly from
 
 ## 📸 Screenshots
 
-<p align="center">
-  <img src="assets/screenshot_writing_pad.png" width="880" alt="Syntly Writing Pad Workspace" />
-</p>
-<p align="center">
-  <em>The dedicated Writing Pad with Custom Persona Instructions, Multi-Select Modifiers, and Real-Time Corrections</em>
-</p>
+### Dedicated Writing Pad Workspace
+![Syntly Writing Pad Workspace](assets/screenshot_writing_pad.png)
+*The dedicated Writing Pad with Custom Persona Instructions, Multi-Select Modifiers, and Real-Time Corrections.*
 
-<p align="center">
-  <img src="assets/screenshot_floating_pill.png" width="880" alt="Real-Time In-Context Proofreading & Floating Pill" />
-</p>
-<p align="center">
-  <em>Real-time in-context proofreading while typing in any macOS app — highlights mistakes in red, suggests fixes in green, and docks next to your caret with instant keyboard shortcuts (⌥Tab)</em>
-</p>
+### In-Context Floating Pill & Real-Time Proofreading
+![Real-Time In-Context Proofreading & Floating Pill](assets/screenshot_floating_pill.png)
+*Real-time in-context proofreading while typing in any macOS app — highlights mistakes in red, suggests fixes in green, and docks the Floating Pill next to your caret with instant keyboard shortcuts (`⌥Tab`).*
 
 ---
 
 ## ✨ Core Features
 
 ### 1. Dedicated Writing Pad Workspace (`⌘N`)
+
+![Syntly Writing Pad Workspace](assets/screenshot_writing_pad.png)
+
 - **Document Canvas**: A dedicated, distraction-free drafting pad for emails, reports, technical writing, and essays.
 - **Custom Persona & Style Instructions**: A multiline instruction box to define *who* is writing and what domain guidelines to follow (e.g. *"Act as an executive CTO"*, *"Use active voice"*, *"Client email format"*). Save reusable style presets with one click.
 - **Multi-Select Functional Levers**: Toggle any combination of structural modifiers without clashing with your persona:
@@ -64,7 +61,11 @@ Download the ready-to-run DMG installer for version **v1 (1.0.0)** directly from
 - **Preview & Revert**: Review rewrites before accepting, choose **Replace Original** or **Insert Below**, or click **Revert to Original (Undo)** at any time.
 
 ### 2. System-Wide Real-Time Proofreading (`⌥Tab`)
+
+![Real-Time In-Context Proofreading & Floating Pill](assets/screenshot_floating_pill.png)
+
 - **Non-Intrusive Floating Corner Pill**: Floats near your active cursor across Slack, VS Code, Notes, Mail, Discord, and browsers without stealing focus.
+- **Visual Red & Green Feedback**: Highlights typos, misspellings, and grammatical errors with red underline tokens, and displays verified corrections in green.
 - **Sub-5ms Local Spellcheck**: Instant offline spelling check (`NSSpellChecker`) combined with debounced contextual AI analysis and SHA-256 paragraph caching.
 - **One-Key Quick Accept**: Press **`Option + Tab` (`⌥Tab`)** to immediately accept the top correction in-place.
 - **Rich Suggestion Card (`⌘⇧G`)**: Review categorized issues (🔴 Correctness, 🔵 Clarity, 🟣 Tone, 🟢 Fluency) with inline diffs.
