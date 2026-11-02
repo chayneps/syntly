@@ -534,11 +534,15 @@ public struct SettingsView: View {
 extension View {
     @ViewBuilder
     func disableWritingToolsIfAvailable() -> some View {
+        #if compiler(>=6.0)
         if #available(macOS 15.0, *) {
             self.writingToolsBehavior(.disabled)
         } else {
             self
         }
+        #else
+        self
+        #endif
     }
 }
 
