@@ -79,19 +79,36 @@ Download the ready-to-run DMG installer for version **v1 (1.0.0)** directly from
 
 ---
 
-## 🔑 AI Providers & Setup
+## 🔑 AI Providers & Supported Gateways
 
-Syntly connects to any OpenAI-compatible API endpoint. Configure your preferred model in **Settings (`⌘,`) → API & Model**:
+Synt(ax)ly connects to any standard OpenAI-compatible completions endpoint. Configure your preferred backend in **Settings (`⌘,`) → API & Model**:
 
-| Provider | Endpoint | Cost / Privacy |
+| Provider / Gateway | Endpoint | Pricing & Capabilities |
 |---|---|---|
-| **Local CLI Proxy** (Recommended) | `http://127.0.0.1:8317/v1` | Free with your Google / Gemini / Anthropic account |
-| **LM Studio / Ollama** | `http://localhost:1234/v1` or `http://localhost:11434/v1` | 100% Free, offline, and private |
-| **Google AI Studio** | `https://generativelanguage.googleapis.com/v1beta/openai/` | Free tier available |
-| **OpenAI / OpenRouter / Kiro Gateway** | `https://api.openai.com/v1` | Pay-as-you-go with your API key |
+| **[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)** *(Recommended)* | `http://127.0.0.1:8317/v1` | **Zero-API-Key**: Leverages your logged-in Google / Gemini / Anthropic subscriptions |
+| **[Kiro Gateway](https://github.com/jwadow/kiro-gateway)** | `https://api.kirogateway.com/v1` *(or local)* | **Kiro Subscription**: Routes requests through Kiro IDE / CLI with Claude & frontier models |
+| **[LM Studio](https://lmstudio.ai) / [Ollama](https://ollama.com)** | `http://localhost:1234/v1` / `:11434/v1` | **100% Free & Offline**: Private local inference using open-source models (`llama3.2`, `qwen`) |
+| **[Google AI Studio](https://aistudio.google.com)** | `https://generativelanguage.googleapis.com/v1beta/openai/` | Generous free tier via standard Gemini API key |
+| **OpenAI / OpenRouter / vLLM** | `https://api.openai.com/v1` | Pay-as-you-go with personal API keys |
 
-- **Test Connection**: Instant latency check and status validation.
-- **Fetch Available Models**: Automatically queries your provider's `/models` endpoint to populate available models.
+### Featured Gateways:
+
+#### ⚡ [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
+- **What it does**: An open-source gateway that exposes local CLI and web-authenticated AI sessions (such as Gemini CLI, Google Cloud SDK, Claude Code, and Codex) as a standard OpenAI-compatible HTTP server running at `http://127.0.0.1:8317/v1`.
+- **How to connect in Synt(ax)ly**:
+  1. Start `cli-proxy-api` in your terminal.
+  2. In Syntly, open **Settings (`⌘,`) → API & Model** and click the **CLI Proxy API (127.0.0.1:8317)** preset.
+  3. Syntly **automatically detects** your local configuration and auth tokens from `~/.cli-proxy-api/config.yaml`—no manual API key copying required!
+
+#### 🛡️ [jwadow/kiro-gateway](https://github.com/jwadow/kiro-gateway)
+- **What it does**: A dedicated proxy API gateway for the Kiro IDE & CLI (powered by Amazon Q Developer / AWS CodeWhisperer infrastructure). It provides OpenAI- and Anthropic-compatible endpoints, enabling external macOS apps and agentic tools to query Claude and frontier reasoning models through your active Kiro subscription.
+- **How to connect in Synt(ax)ly**:
+  1. Launch your `kiro-gateway` instance (or point to your managed gateway endpoint).
+  2. In Syntly, select the **Kiro Gateway** preset from the Provider dropdown.
+  3. Enter your gateway endpoint and API token; Syntly securely saves the token in the encrypted **macOS Keychain**.
+
+- **Test Connection**: Click *Test Connection* in Settings to benchmark real-world round-trip latency.
+- **Fetch Available Models**: Click the refresh button beside the model picker to query your gateway's `/models` endpoint and populate active models automatically.
 
 ---
 
