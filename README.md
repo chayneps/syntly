@@ -55,7 +55,12 @@ Download the ready-to-run DMG installer for version **v1 (1.0.0)** directly from
 *Real-time in-context proofreading while typing across any macOS application — the hot-pink Manga Thinking Bubble docks right beside your active cursor with live suggestions HUD and instant keyboard replacement (`⌥Tab`).*
 
 - **Manga Thinking Bubble Floating Pill**: The iconic hot-pink thinking bubble floats right beside your active cursor across Slack, Notes, Mail, VS Code, Discord, and browsers. Shows a green checkmark when your writing is all clear, and a red counter badge when improvements are detected.
-- **Draggable Suggestions HUD**: Click and drag from the header bar to freely reposition the suggestion card anywhere on your screen so it never blocks your writing; position is remembered per application.
+- **Right-Click Context Menu & Per-App Controls**: Right-click (or `Control + Click`) the floating bubble or the suggestion dialog header at any time:
+  - **Disable in [App Name] for 1 Hour**: Temporarily snooze the pill for 60 minutes in that specific app without affecting any other windows.
+  - **Disable in [App Name]**: Permanently disable Synt(ax)ly in that application.
+  - **Resume / Re-enable**: Easily unpause or re-enable via the pill context menu or the menu bar dropdown icon.
+  - Quick shortcuts to **Open Writing Pad (`⌘N`)**, **Settings (`⌘,`)**, or **Reset Position**.
+- **Draggable Pill & HUD with Position Memory**: Drag the pill or the expanded card anywhere on your display so it never blocks your content; your custom coordinates are remembered automatically per app, and double-clicking resets them to default.
 - **Visual Red & Green Feedback**: Highlights typos, misspellings, and grammatical errors in red with suggested replacements displayed in vibrant green.
 - **Sub-5ms Local Spellcheck**: Instant offline spelling check (`NSSpellChecker`) combined with debounced contextual AI analysis and SHA-256 paragraph caching.
 - **One-Key Quick Accept**: Press **`Option + Tab` (`⌥Tab`)** to immediately accept the top correction in-place without switching windows.
