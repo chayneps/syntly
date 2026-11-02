@@ -514,55 +514,36 @@ struct InContextTypingScreenshotView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .background(Color(red: 0.10, green: 0.12, blue: 0.15))
 
-                    // Floating Over Document: The Synt(ax)ly Floating Pill & Popover Card
-                    VStack(alignment: .trailing, spacing: 10) {
-                        // 1. Prominent Floating Pill
-                        HStack(spacing: 10) {
+                    // Floating Over Document: The Synt(ax)ly Manga Thinking Bubble Pill & Popover Card
+                    VStack(alignment: .trailing, spacing: 8) {
+                        // 1. Authentic Manga Thinking Bubble Floating Pill
+                        HStack(spacing: 8) {
+                            Text("Floating Near Caret")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.secondary)
+
                             ZStack(alignment: .topTrailing) {
-                                Circle()
-                                    .fill(Color(red: 0.996, green: 0.008, blue: 0.890))
-                                    .frame(width: 32, height: 32)
-                                Text("S")
-                                    .font(.system(size: 17, weight: .black, design: .rounded))
-                                    .foregroundStyle(.white)
+                                if let img = NSImage(contentsOfFile: "assets/app_icon_1024.png") {
+                                    Image(nsImage: img)
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fit)
+                                        .frame(width: 44, height: 44)
+                                } else {
+                                    Image(nsImage: StatusBarController.renderMangaBubble(size: 44))
+                                        .resizable()
+                                        .frame(width: 44, height: 44)
+                                }
 
                                 Text("2")
                                     .font(.system(size: 10, weight: .heavy, design: .rounded))
                                     .foregroundStyle(.white)
-                                    .frame(minWidth: 16, minHeight: 16)
+                                    .frame(minWidth: 17, minHeight: 17)
                                     .background(Color(red: 1.0, green: 0.25, blue: 0.25), in: Capsule())
                                     .overlay(Capsule().strokeBorder(.white, lineWidth: 1.5))
                                     .offset(x: 4, y: -4)
                             }
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Synt(ax)ly Floating Pill")
-                                    .font(.system(size: 12, weight: .bold))
-                                    .foregroundStyle(.white)
-                                Text("Docked near active cursor")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            Spacer()
-
-                            Text("⌥Tab to Fix")
-                                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(Color.blue.opacity(0.3), in: Capsule())
-                                .overlay(Capsule().strokeBorder(Color.blue.opacity(0.6), lineWidth: 1))
-                                .foregroundStyle(Color(red: 0.4, green: 0.7, blue: 1.0))
+                            .shadow(color: .black.opacity(0.45), radius: 8, y: 4)
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .frame(width: 380)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .strokeBorder(Color.white.opacity(0.22), lineWidth: 1)
-                        )
-                        .shadow(color: .black.opacity(0.5), radius: 10, y: 5)
 
                         // 2. The live suggestions popover card
                         FloatingOverlayView(coordinator: coordinator)

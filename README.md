@@ -35,9 +35,9 @@ Download the ready-to-run DMG installer for version **v1 (1.0.0)** directly from
 ![Syntly Writing Pad Workspace](assets/screenshot_writing_pad.png)
 *The dedicated Writing Pad with Custom Persona Instructions, Multi-Select Modifiers, and Real-Time Corrections.*
 
-### In-Context Floating Pill & Real-Time Proofreading
-![Real-Time In-Context Proofreading & Floating Pill](assets/screenshot_floating_pill.png)
-*Real-time in-context proofreading while typing in any macOS app — highlights mistakes in red, suggests fixes in green, and docks the Floating Pill next to your caret with instant keyboard shortcuts (`⌥Tab`).*
+### In-Context Manga Thinking Bubble & Real-Time Proofreading
+![Real-Time In-Context Proofreading & Manga Thinking Bubble](assets/screenshot_floating_pill.png)
+*Real-time in-context proofreading while typing in any macOS app — the hot-pink Manga Thinking Bubble docks right beside your active cursor, with live suggestions HUD and instant keyboard replacement (`⌥Tab`).*
 
 ---
 
@@ -62,10 +62,11 @@ Download the ready-to-run DMG installer for version **v1 (1.0.0)** directly from
 
 ### 2. System-Wide Real-Time Proofreading (`⌥Tab`)
 
-![Real-Time In-Context Proofreading & Floating Pill](assets/screenshot_floating_pill.png)
+![Real-Time In-Context Proofreading & Manga Thinking Bubble](assets/screenshot_floating_pill.png)
 
-- **Non-Intrusive Floating Corner Pill**: Floats near your active cursor across Slack, VS Code, Notes, Mail, Discord, and browsers without stealing focus.
-- **Visual Red & Green Feedback**: Highlights typos, misspellings, and grammatical errors with red underline tokens, and displays verified corrections in green.
+- **Manga Thinking Bubble Floating Pill**: The iconic hot-pink thinking bubble floats right beside your active cursor across Slack, Notes, Mail, VS Code, Discord, and browsers. Shows a green checkmark when your writing is all clear, and a red counter badge when improvements are detected.
+- **Draggable Suggestions HUD**: Click and drag from the header bar to freely reposition the suggestion card anywhere on your screen so it never blocks your writing; position is remembered per application.
+- **Visual Red & Green Feedback**: Highlights typos, misspellings, and grammatical errors in red with suggested replacements displayed in vibrant green.
 - **Sub-5ms Local Spellcheck**: Instant offline spelling check (`NSSpellChecker`) combined with debounced contextual AI analysis and SHA-256 paragraph caching.
 - **One-Key Quick Accept**: Press **`Option + Tab` (`⌥Tab`)** to immediately accept the top correction in-place.
 - **Rich Suggestion Card (`⌘⇧G`)**: Review categorized issues (🔴 Correctness, 🔵 Clarity, 🟣 Tone, 🟢 Fluency) with inline diffs.
