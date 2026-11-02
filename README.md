@@ -39,10 +39,10 @@ Download the ready-to-run DMG installer for version **v1 (1.0.0)** directly from
 </p>
 
 <p align="center">
-  <img src="assets/screenshot_floating_pill.png" width="340" alt="Floating Corner Pill & Popover" />
+  <img src="assets/screenshot_floating_pill.png" width="880" alt="Real-Time In-Context Proofreading & Floating Pill" />
 </p>
 <p align="center">
-  <em>System-wide non-intrusive floating corner pill with 1-click diff review and quick tone rewrites</em>
+  <em>Real-time in-context proofreading while typing in any macOS app — highlights mistakes in red, suggests fixes in green, and docks next to your caret with instant keyboard shortcuts (⌥Tab)</em>
 </p>
 
 ---

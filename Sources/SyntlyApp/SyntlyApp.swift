@@ -318,13 +318,13 @@ enum ScreenshotGenerator {
 
         renderView(view: padView, size: CGSize(width: 1060, height: 740), filename: "assets/screenshot_writing_pad.png")
 
-        // 2. Render Floating Pill & Popover Card
-        coordinator.simulateDemoPillOnScreen()
-        let overlayView = FloatingOverlayView(coordinator: coordinator)
-            .frame(width: 380, height: 420)
+        // 2. Render In-Context Floating Pill & Popover Card (with active typing, red & green highlights)
+        coordinator.simulateDemoPillOnScreen(appName: "Notes")
+
+        let inContextView = InContextTypingScreenshotView(coordinator: coordinator, settings: settings)
             .preferredColorScheme(.dark)
 
-        renderView(view: overlayView, size: CGSize(width: 380, height: 420), filename: "assets/screenshot_floating_pill.png")
+        renderView(view: inContextView, size: CGSize(width: 1060, height: 640), filename: "assets/screenshot_floating_pill.png")
 
         print("✅ Finished rendering screenshots.")
     }
@@ -345,5 +345,236 @@ enum ScreenshotGenerator {
             try? pngData.write(to: url)
             print("   Saved \(filename) (\(pngData.count / 1024) KB)")
         }
+    }
+}
+
+// MARK: - In-Context Typing Screenshot View
+
+struct SquigglyLine: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let step: CGFloat = 3.5
+        let h: CGFloat = 2.0
+        var x = rect.minX
+        path.move(to: CGPoint(x: x, y: rect.maxY))
+        var toggle = false
+        while x < rect.maxX {
+            x += step
+            let y = toggle ? rect.maxY : rect.maxY - h
+            path.addLine(to: CGPoint(x: min(x, rect.maxX), y: y))
+            toggle.toggle()
+        }
+        return path
+    }
+}
+
+struct InlineCorrectionToken: View {
+    let wrong: String
+    let fixed: String
+
+    var body: some View {
+        HStack(spacing: 5) {
+            // Mistake in red with strikethrough & squiggly underline
+            Text(wrong)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color(red: 1.0, green: 0.38, blue: 0.38))
+                .strikethrough(true, color: Color(red: 1.0, green: 0.38, blue: 0.38))
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(Color.red.opacity(0.16), in: RoundedRectangle(cornerRadius: 4))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .strokeBorder(Color.red.opacity(0.45), lineWidth: 1)
+                )
+                .overlay(
+                    SquigglyLine()
+                        .stroke(Color(red: 1.0, green: 0.35, blue: 0.35), lineWidth: 1.2)
+                        .offset(y: 11)
+                )
+
+            Image(systemName: "arrow.right")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.secondary)
+
+            // Fix in bright green
+            Text(fixed)
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(Color(red: 0.25, green: 0.90, blue: 0.48))
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(Color.green.opacity(0.16), in: RoundedRectangle(cornerRadius: 4))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .strokeBorder(Color.green.opacity(0.45), lineWidth: 1)
+                )
+        }
+    }
+}
+
+struct InContextTypingScreenshotView: View {
+    @ObservedObject var coordinator: WritingAssistantCoordinator
+    let settings: AppSettings
+
+    var body: some View {
+        ZStack {
+            // Desktop wallpaper gradient
+            LinearGradient(
+                colors: [Color(red: 0.07, green: 0.09, blue: 0.13), Color(red: 0.12, green: 0.14, blue: 0.19)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            // Simulated Host macOS Application (Notes / Email / Document Editor)
+            VStack(spacing: 0) {
+                // Window Title Bar
+                HStack(spacing: 8) {
+                    // Traffic Lights
+                    HStack(spacing: 6) {
+                        Circle().fill(Color(red: 1.0, green: 0.36, blue: 0.34)).frame(width: 12, height: 12)
+                        Circle().fill(Color(red: 1.0, green: 0.75, blue: 0.18)).frame(width: 12, height: 12)
+                        Circle().fill(Color(red: 0.16, green: 0.79, blue: 0.38)).frame(width: 12, height: 12)
+                    }
+                    .padding(.leading, 14)
+
+                    Spacer()
+
+                    HStack(spacing: 6) {
+                        Image(systemName: "note.text")
+                            .foregroundStyle(.yellow)
+                        Text("Notes — Q4 Launch Briefing")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.primary)
+                    }
+
+                    Spacer()
+
+                    HStack(spacing: 4) {
+                        Circle().fill(Color.green).frame(width: 7, height: 7)
+                        Text("Live Typing")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.trailing, 14)
+                }
+                .frame(height: 38)
+                .background(Color(red: 0.14, green: 0.16, blue: 0.20))
+
+                Divider()
+
+                // Editor Workspace + Floating Syntly Overlay
+                HStack(alignment: .top, spacing: 16) {
+                    // Left Column: Active Typing Document
+                    VStack(alignment: .leading, spacing: 18) {
+                        Text("Hi Alex,")
+                            .font(.system(size: 16))
+                            .foregroundStyle(.primary)
+
+                        Text("I wanted to follow up on the release checklist before tomorrow's deployment.")
+                            .font(.system(size: 16))
+                            .foregroundStyle(.primary)
+
+                        // Sentences with active inline corrections in red and green
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack(alignment: .center, spacing: 6) {
+                                Text("Due to the fact that")
+                                    .font(.system(size: 15))
+                                    .foregroundStyle(.primary)
+
+                                InlineCorrectionToken(wrong: "their going", fixed: "they're going")
+
+                                Text("to deploy tonight,")
+                                    .font(.system(size: 15))
+                                    .foregroundStyle(.primary)
+                            }
+
+                            HStack(alignment: .center, spacing: 6) {
+                                Text("we must verify that")
+                                    .font(.system(size: 15))
+                                    .foregroundStyle(.primary)
+
+                                InlineCorrectionToken(wrong: "all benchmarks is", fixed: "all benchmarks are")
+
+                                Text("verified.")
+                                    .font(.system(size: 15))
+                                    .foregroundStyle(.primary)
+                            }
+                        }
+
+                        // Next paragraph with blinking caret
+                        HStack(spacing: 3) {
+                            Text("Please let me know if you need additional help with the benchmarks")
+                                .font(.system(size: 15))
+                                .foregroundStyle(.primary)
+
+                            // Active typing cursor
+                            Rectangle()
+                                .fill(Color(red: 0.25, green: 0.55, blue: 1.0))
+                                .frame(width: 2.5, height: 18)
+                                .shadow(color: Color.blue.opacity(0.6), radius: 3)
+                        }
+
+                        Spacer()
+
+                        // Editor footer bar
+                        HStack {
+                            HStack(spacing: 5) {
+                                Image(systemName: "sparkles")
+                                    .foregroundStyle(.purple)
+                                Text("Synt(ax)ly active • Instant corrections as you write")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text("Ln 6, Col 64 • 78 words")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .padding(22)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .background(Color(red: 0.10, green: 0.12, blue: 0.15))
+
+                    // Right Column: Synt(ax)ly Floating Pill & Popover Card
+                    VStack(alignment: .trailing, spacing: 8) {
+                        // Floating Pill docked near typing caret
+                        HStack(spacing: 8) {
+                            Text("Floating Near Caret")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.secondary)
+
+                            ZStack(alignment: .topTrailing) {
+                                Image(nsImage: StatusBarController.renderMangaBubble(size: 36))
+                                    .resizable()
+                                    .frame(width: 36, height: 36)
+
+                                Text("2")
+                                    .font(.system(size: 10, weight: .heavy, design: .rounded))
+                                    .foregroundStyle(.white)
+                                    .frame(minWidth: 16, minHeight: 16)
+                                    .background(Color(red: 1.0, green: 0.32, blue: 0.32), in: Capsule())
+                                    .overlay(Capsule().strokeBorder(.white, lineWidth: 1.5))
+                                    .offset(x: 4, y: -4)
+                            }
+                            .shadow(color: .black.opacity(0.35), radius: 5, y: 3)
+                        }
+
+                        // The live suggestions popover card
+                        FloatingOverlayView(coordinator: coordinator)
+                            .frame(width: 380, height: 350)
+                            .shadow(color: .black.opacity(0.45), radius: 14, y: 8)
+                    }
+                    .padding(.trailing, 18)
+                    .padding(.top, 14)
+                }
+            }
+            .frame(width: 1000, height: 580)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.55), radius: 24, y: 12)
+        }
+        .frame(width: 1060, height: 640)
     }
 }

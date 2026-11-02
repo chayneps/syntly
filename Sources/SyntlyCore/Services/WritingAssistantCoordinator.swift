@@ -61,40 +61,44 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         axEngine.openSystemAccessibilitySettings()
     }
 
-    public func simulateDemoPillOnScreen() {
+    public func simulateDemoPillOnScreen(
+        appName: String = "Notes",
+        issues: [WritingIssue]? = nil
+    ) {
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let anchor = CGPoint(x: screen.midX - 220, y: screen.midY + 140)
         let demoContext = FocusedTextContext(
-            appName: "Demo Preview",
-            bundleID: "dev.syntly.demo",
+            appName: appName,
+            bundleID: "com.apple.Notes",
             pid: ProcessInfo.processInfo.processIdentifier,
-            fullText: "Hi team, their going to discuss about the launch tomorrow.",
+            fullText: "Hi Alex,\n\nDue to the fact that their going to deploy tonight, we need to ensure all benchmarks is verified.",
             selectedText: nil,
             selectedRange: NSRange(location: 50, length: 0),
             anchorAppKitPoint: anchor
         )
         self.currentContext = demoContext
-        self.issues = [
+        self.issues = issues ?? [
             WritingIssue(
                 original: "their going",
                 replacement: "they're going",
                 category: .correctness,
-                explanation: "Use contraction they're instead of possessive their.",
-                utf16Location: 9,
+                explanation: "Use contraction 'they're' instead of possessive 'their'.",
+                utf16Location: 30,
                 utf16Length: 11,
                 isLocalSpellcheck: false
             ),
             WritingIssue(
-                original: "discuss about",
-                replacement: "discuss",
-                category: .fluency,
-                explanation: "Remove redundant preposition 'about'.",
-                utf16Location: 24,
-                utf16Length: 13,
+                original: "all benchmarks is",
+                replacement: "all benchmarks are",
+                category: .correctness,
+                explanation: "Subject-verb agreement: plural 'benchmarks' takes 'are'.",
+                utf16Location: 75,
+                utf16Length: 17,
                 isLocalSpellcheck: false
             )
         ]
-        self.pillState = .issuesFound(count: 2, topCategory: .correctness)
+        self.pillState = .issuesFound(count: self.issues.count, topCategory: .correctness)
+        self.isPopoverExpanded = true
         self.onOverlayStateChanged?()
     }
 
