@@ -21,11 +21,29 @@
 
 ## ⚡ Quick Download
 
-Download the ready-to-run DMG installer directly from GitHub Releases:
+Download the ready-to-run DMG installer for version **v1 (1.0.0)** directly from GitHub Releases:
 
-👉 **[Download Latest Syntly DMG (Universal 2)](https://github.com/chayneps/syntly/releases/latest)**
+👉 **[Download Syntly v1 DMG (Universal 2)](https://github.com/chayneps/syntly/releases/latest)**
 
 *Supports both Apple Silicon (M1/M2/M3/M4) and Intel Macs natively.*
+
+---
+
+## 📸 Screenshots
+
+<p align="center">
+  <img src="assets/screenshot_writing_pad.png" width="880" alt="Syntly Writing Pad Workspace" />
+</p>
+<p align="center">
+  <em>The dedicated Writing Pad with Custom Persona Instructions, Multi-Select Modifiers, and Real-Time Corrections</em>
+</p>
+
+<p align="center">
+  <img src="assets/screenshot_floating_pill.png" width="340" alt="Floating Corner Pill & Popover" />
+</p>
+<p align="center">
+  <em>System-wide non-intrusive floating corner pill with 1-click diff review and quick tone rewrites</em>
+</p>
 
 ---
 
@@ -102,7 +120,7 @@ open Syntly.app
 chmod +x scripts/build-dmg.sh
 ./scripts/build-dmg.sh
 ```
-*Creates a compressed `Syntly-0.1.0-Universal.dmg` containing the native Universal 2 (`arm64` + `x86_64`) binary and drag-and-drop `/Applications` folder shortcut.*
+*Creates a compressed `Syntly-1.0.0-Universal.dmg` containing the native Universal 2 (`arm64` + `x86_64`) binary and drag-and-drop `/Applications` folder shortcut.*
 
 ---
 

@@ -77,10 +77,16 @@ public struct WritingPadView: View {
     public init(
         coordinator: WritingAssistantCoordinator,
         settings: AppSettings = .shared,
+        initialText: String = "",
+        initialModifiers: Set<RewriteModifier> = [],
+        initialIssues: [WritingIssue] = [],
         onOpenSettings: (() -> Void)? = nil
     ) {
         self.coordinator = coordinator
         self.settings = settings
+        self._padText = State(initialValue: initialText)
+        self._selectedRewriteModifiers = State(initialValue: initialModifiers)
+        self._padIssues = State(initialValue: initialIssues)
         self.onOpenSettings = onOpenSettings
     }
 
@@ -124,7 +130,7 @@ public struct WritingPadView: View {
                 padText = updated
                 runPadCheck()
             }
-            if !padText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if !padText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && padIssues.isEmpty {
                 DispatchQueue.main.async {
                     runPadCheck()
                 }

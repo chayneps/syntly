@@ -59,6 +59,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             openWritingPadWindow()
         }
 
+        if CommandLine.arguments.contains("--render-screenshots") {
+            ScreenshotGenerator.generateAll()
+            exit(0)
+        }
+
         if CommandLine.arguments.contains("--demo-pill") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 self.coordinator.simulateDemoPillOnScreen()
@@ -249,6 +254,96 @@ struct SyntlyMainApp: App {
     var body: some Scene {
         Settings {
             SettingsView(coordinator: appDelegate.coordinator, settings: .shared)
+        }
+    }
+}
+
+// MARK: - Automated Screenshot Generator
+
+@MainActor
+enum ScreenshotGenerator {
+    static func generateAll() {
+        print("📸 Rendering feature screenshots for README...")
+
+        let settings = AppSettings.shared
+        settings.customStyleInstruction = "Executive briefing tone. Keep sentences clear and tight, highlight key deliverables, and eliminate filler words."
+
+        let sampleText = """
+        Hi team,
+
+        I just wanted to check if their going to finish the Q4 architecture review today. Due to the fact that the release is scheduled for Monday, we need to make sure all benchmarks is verified.
+
+        Please discuss about this in the upcoming sync.
+        """
+
+        let sampleIssues: [WritingIssue] = [
+            WritingIssue(
+                original: "their going",
+                replacement: "they're going",
+                category: .correctness,
+                explanation: "Use 'they're' instead of the possessive 'their'."
+            ),
+            WritingIssue(
+                original: "Due to the fact that",
+                replacement: "Because",
+                category: .clarity,
+                explanation: "Be concise by replacing the wordy phrase."
+            ),
+            WritingIssue(
+                original: "all benchmarks is",
+                replacement: "all benchmarks are",
+                category: .correctness,
+                explanation: "Subject-verb agreement: plural 'benchmarks' takes 'are'."
+            ),
+            WritingIssue(
+                original: "discuss about",
+                replacement: "discuss",
+                category: .fluency,
+                explanation: "'Discuss' does not require the preposition 'about'."
+            )
+        ]
+
+        let coordinator = WritingAssistantCoordinator.shared
+
+        // 1. Render Writing Pad View
+        let padView = WritingPadView(
+            coordinator: coordinator,
+            settings: settings,
+            initialText: sampleText,
+            initialModifiers: [.makeConcise, .beDirect, .bulletPoints],
+            initialIssues: sampleIssues
+        )
+        .frame(width: 1060, height: 740)
+        .preferredColorScheme(.dark)
+
+        renderView(view: padView, size: CGSize(width: 1060, height: 740), filename: "assets/screenshot_writing_pad.png")
+
+        // 2. Render Floating Pill & Popover Card
+        coordinator.simulateDemoPillOnScreen()
+        let overlayView = FloatingOverlayView(coordinator: coordinator)
+            .frame(width: 380, height: 420)
+            .preferredColorScheme(.dark)
+
+        renderView(view: overlayView, size: CGSize(width: 380, height: 420), filename: "assets/screenshot_floating_pill.png")
+
+        print("✅ Finished rendering screenshots.")
+    }
+
+    static func renderView(view: some View, size: CGSize, filename: String) {
+        let hosting = NSHostingView(rootView: view)
+        hosting.frame = CGRect(origin: .zero, size: size)
+        hosting.layoutSubtreeIfNeeded()
+
+        guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else {
+            print("❌ Failed to create bitmap representation for \(filename)")
+            return
+        }
+        hosting.cacheDisplay(in: hosting.bounds, to: rep)
+
+        if let pngData = rep.representation(using: .png, properties: [:]) {
+            let url = URL(fileURLWithPath: filename)
+            try? pngData.write(to: url)
+            print("   Saved \(filename) (\(pngData.count / 1024) KB)")
         }
     }
 }
