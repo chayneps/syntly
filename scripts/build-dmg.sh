@@ -78,7 +78,7 @@ Apple Developer ID certificate, macOS Gatekeeper blocks it on first launch:
   "Apple could not verify 'Syntly.app' is free of malware"
 
 This is because macOS defaults to "App Store & Known Developers".
-On modern macOS, clicking "Open Anyway" often fails or loops.
+On modern macOS (Sonoma & Sequoia), clicking "Open Anyway" often loops.
 
 Use either method below to launch Synt(ax)ly in seconds:
 
@@ -110,12 +110,45 @@ If you want your Mac to allow open-source apps without blocking:
 5. Syntly.app will now open without any warnings.
 
 
-STEP 3: ACCESSIBILITY PERMISSION (REQUIRED FOR IN-CONTEXT ASSISTANCE)
+STEP 3: GRANT ACCESSIBILITY PERMISSION (ONE-CLICK SETUP)
 ------------------------------------------------------------------------
-To let Synt(ax)ly detect your cursor and display suggestions as you type:
-1. Open System Settings -> Privacy & Security -> Accessibility.
-2. Toggle ON the switch next to "Synt(ax)ly" (or click "+" and select
+To detect active text fields and display the real-time Manga Thinking
+Bubble beside your typing cursor, Synt(ax)ly requires macOS Accessibility
+permission:
+
+1. Launch Synt(ax)ly. It runs quietly in your macOS menu bar (top-right
+   of your screen near the clock).
+2. Click the Synt(ax)ly menu bar icon.
+3. Click the yellow warning:
+   "⚠️ Grant Accessibility Access…"
+   This immediately opens System Settings directly to Privacy & Security
+   -> Accessibility.
+4. Toggle ON the switch next to "Synt(ax)ly" (or click "+" and select
    /Applications/Syntly.app).
+
+
+STEP 4: CONFIGURE YOUR AI MODEL & CLIPROXYAPI
+------------------------------------------------------------------------
+Synt(ax)ly connects to your preferred local or cloud AI models.
+
+1. Click the Synt(ax)ly menu bar icon and choose "Settings…" (or press ⌘,).
+2. Go to the "API & Model" tab.
+
+Recommended Gateway — CLIProxyAPI (Zero-API-Key Setup):
+-------------------------------------------------------
+If you use CLIProxyAPI (https://github.com/router-for-me/CLIProxyAPI):
+- Simply click the "CLI Proxy API (127.0.0.1:8317)" preset button.
+- Syntly will AUTOMATICALLY read your existing Google, Gemini, or Claude
+  credentials from ~/.cli-proxy-api/config.yaml — no manual API key copying!
+
+Other Supported Backends:
+-------------------------
+- Kiro Gateway (https://github.com/jwadow/kiro-gateway): Route through your
+  Kiro IDE subscription with Claude and frontier models.
+- Ollama / LM Studio: 100% free and offline local inference.
+- Google AI Studio (Gemini) / OpenAI / OpenRouter: Paste your API key.
+
+Click "Test Connection" to benchmark latency, and you're ready to write!
 
 ========================================================================
 100% Free & Open Source under the MIT License

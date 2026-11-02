@@ -66,10 +66,25 @@ To allow all open-source apps on your Mac without blocking:
 
 ---
 
-### 🛡️ Required Permission: Accessibility
-Synt(ax)ly needs macOS Accessibility permission to detect focused text fields and display the floating Manga Thinking Bubble as you type:
-1. Open **System Settings → Privacy & Security → Accessibility**.
-2. Toggle **ON** the switch next to **Synt(ax)ly** (or click `+` and choose `/Applications/Syntly.app`).
+### 🛡️ Step 3: Grant Accessibility Permission (One-Click Setup)
+Synt(ax)ly needs macOS Accessibility permission to detect active text fields and display the real-time Manga Thinking Bubble beside your cursor:
+1. Launch **Syntly.app**. It will appear quietly in your macOS menu bar at the top-right of your screen.
+2. Click the **Synt(ax)ly menu bar icon** and click the yellow warning:
+   > **`⚠️ Grant Accessibility Access…`**
+3. This opens **System Settings → Privacy & Security → Accessibility** automatically.
+4. Toggle **ON** the switch next to **Synt(ax)ly** (or click `+` and choose `/Applications/Syntly.app`).
+
+---
+
+### ⚙️ Step 4: Configure Your AI Model (CLIProxyAPI & Gateways)
+Open **Settings (`⌘,`) → API & Model** from the menu bar icon:
+
+- **[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (Recommended — Zero-API-Key)**:
+  - If you run `cli-proxy-api` locally (`http://127.0.0.1:8317/v1`), click the **"CLI Proxy API"** preset button.
+  - Syntly **automatically detects** your existing Google, Gemini, or Claude authentication tokens from `~/.cli-proxy-api/config.yaml`—no manual copying required!
+- **[Kiro Gateway](https://github.com/jwadow/kiro-gateway)**: Select the Kiro Gateway preset to route requests via your active Kiro subscription with Claude and frontier models.
+- **[Ollama](https://ollama.com) / [LM Studio](https://lmstudio.ai)**: 100% free and offline local inference using open weights (`llama3.2`, `qwen`).
+- **Google AI Studio (Gemini) / OpenAI / OpenRouter**: Enter your API key and click **Test Connection** to benchmark real-world latency.
 
 ---
 
