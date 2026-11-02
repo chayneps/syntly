@@ -11,17 +11,20 @@ public final class StatusBarController: NSObject {
     private var cancellables = Set<AnyCancellable>()
     private let onOpenWritingPad: () -> Void
     private let onOpenSettings: () -> Void
+    private let onOpenAbout: (() -> Void)?
 
     public init(
         coordinator: WritingAssistantCoordinator,
         settings: AppSettings,
         onOpenWritingPad: @escaping () -> Void,
-        onOpenSettings: @escaping () -> Void
+        onOpenSettings: @escaping () -> Void,
+        onOpenAbout: (() -> Void)? = nil
     ) {
         self.coordinator = coordinator
         self.settings = settings
         self.onOpenWritingPad = onOpenWritingPad
         self.onOpenSettings = onOpenSettings
+        self.onOpenAbout = onOpenAbout
         super.init()
 
         setupStatusItem()
@@ -59,6 +62,10 @@ public final class StatusBarController: NSObject {
             onOpenSettings: { [weak self] in
                 self?.popover?.performClose(nil)
                 self?.onOpenSettings()
+            },
+            onOpenAbout: { [weak self] in
+                self?.popover?.performClose(nil)
+                self?.onOpenAbout?()
             }
         )
         let hostingController = NSHostingController(rootView: menuView.padding(14))

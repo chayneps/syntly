@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var statusBarController: StatusBarController?
     var writingPadWindow: NSWindow?
     var settingsWindow: NSWindow?
+    var aboutWindow: NSWindow?
     private var latencyActivityToken: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -47,6 +48,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onOpenSettings: { [weak self] in
                 self?.openSettingsWindow()
+            },
+            onOpenAbout: { [weak self] in
+                self?.openAboutWindow()
             }
         )
 
@@ -146,6 +150,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
         self.settingsWindow = window
+    }
+
+    func openAboutWindow() {
+        if let win = aboutWindow {
+            win.makeKeyAndOrderFront(nil)
+            win.orderFrontRegardless()
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let contentView = AboutView()
+        let hostingController = NSHostingController(rootView: contentView)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 360),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "About Synt(ax)ly"
+        window.contentViewController = hostingController
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
+        self.aboutWindow = window
     }
 
     func refreshDockIcon() {

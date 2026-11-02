@@ -420,11 +420,11 @@ public struct SettingsView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
 
-                Toggle("Start Synt(ax)ly when Login", isOn: Binding(
+                Toggle("Launch at Login", isOn: Binding(
                     get: { settings.launchAtLoginState },
                     set: { settings.setLaunchAtLogin($0) }
                 ))
-                Text("Automatically launches Synt(ax)ly in the background when you log in to macOS.")
+                Text("Automatically launches Synt(ax)ly in your menu bar when you log in to macOS.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

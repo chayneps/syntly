@@ -6,17 +6,20 @@ public struct MenuBarView: View {
     @ObservedObject var settings: AppSettings
     public var onOpenWritingPad: () -> Void
     public var onOpenSettings: () -> Void
+    public var onOpenAbout: (() -> Void)?
 
     public init(
         coordinator: WritingAssistantCoordinator,
         settings: AppSettings = .shared,
         onOpenWritingPad: @escaping () -> Void,
-        onOpenSettings: @escaping () -> Void
+        onOpenSettings: @escaping () -> Void,
+        onOpenAbout: (() -> Void)? = nil
     ) {
         self.coordinator = coordinator
         self.settings = settings
         self.onOpenWritingPad = onOpenWritingPad
         self.onOpenSettings = onOpenSettings
+        self.onOpenAbout = onOpenAbout
     }
 
     public var body: some View {
@@ -48,7 +51,7 @@ public struct MenuBarView: View {
             Divider()
 
             Toggle("Show Icon in Dock", isOn: $settings.showDockIcon)
-            Toggle("Start App when Login", isOn: Binding(
+            Toggle("Launch at Login", isOn: Binding(
                 get: { settings.launchAtLoginState },
                 set: { settings.setLaunchAtLogin($0) }
             ))
@@ -85,6 +88,12 @@ public struct MenuBarView: View {
                 Label("Settings…", systemImage: "gearshape")
             }
             .keyboardShortcut(",", modifiers: .command)
+
+            Button {
+                onOpenAbout?()
+            } label: {
+                Label("About Synt(ax)ly…", systemImage: "info.circle")
+            }
 
             Divider()
 
