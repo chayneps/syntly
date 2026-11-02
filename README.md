@@ -27,6 +27,14 @@ Download the ready-to-run DMG installer for version **v1 (1.0.0)** directly from
 
 *Supports both Apple Silicon (M1/M2/M3/M4) and Intel Macs natively.*
 
+> [!TIP]
+> **First Launch on macOS (Apple Gatekeeper Notice)**:  
+> Because Synt(ax)ly is an open-source project without a paid Apple Developer certificate, macOS Gatekeeper may show: *"Apple could not verify Syntly.app is free of malware"*.  
+> 
+> To launch it on your Mac, use either method:  
+> • **Via System Settings**: Click **Done** on the alert, go to **System Settings → Privacy & Security**, scroll down to the **Security** section, and click **"Open Anyway"**.  
+> • **Via Terminal (Instant)**: Open Terminal and run `xattr -cr /Applications/Syntly.app`.
+
 ---
 
 ## ✨ Core Features

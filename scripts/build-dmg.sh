@@ -59,6 +59,38 @@ cp -R "${APP_NAME}.app" "$DMG_STAGING_DIR/"
 # Create standard macOS drag-and-drop link to /Applications
 ln -s /Applications "$DMG_STAGING_DIR/Applications"
 
+# Add First Launch guide for Gatekeeper
+cat << 'EOF' > "$DMG_STAGING_DIR/First Launch (Please Read).txt"
+======================================================
+  Synt(ax)ly — macOS First Launch Guide
+======================================================
+
+1. Drag "Syntly.app" into your "Applications" folder.
+
+2. On macOS 14 / 15 (Sonoma / Sequoia), Apple Gatekeeper
+   flags apps downloaded from the internet. If you see:
+   "Apple could not verify Syntly.app is free of malware"
+
+   Simply do ONE of the following:
+
+   Option A (System Settings — 2 clicks):
+   --------------------------------------
+   1. Click "Done" on the alert dialog.
+   2. Open System Settings -> Privacy & Security.
+   3. Scroll down to the "Security" section.
+   4. Click "Open Anyway" next to Syntly.app.
+
+   Option B (Terminal — Instant command):
+   --------------------------------------
+   Open Terminal and paste:
+   xattr -cr /Applications/Syntly.app
+
+======================================================
+Synt(ax)ly is 100% open source under the MIT License.
+GitHub: https://github.com/chayneps/syntly
+======================================================
+EOF
+
 # 3. Create compressed DMG
 echo "Step 3: Creating compressed DMG (${DMG_NAME})..."
 rm -f "${DMG_NAME}"
