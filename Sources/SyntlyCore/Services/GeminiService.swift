@@ -335,6 +335,7 @@ public final class LLMService {
         4. Unique Verbatim Matching: "original" MUST be an exact, case-sensitive substring from the input text. If a word appears multiple times, include 1–2 adjacent context words so "original" appears EXACTLY ONCE in the text.
         5. Drop-in Replacement: "replacement" MUST be the exact drop-in replacement for "original" with matching capitalization and punctuation.
         6. Concise Explanations: "explanation" must be a concise reason under 12 words (e.g. "Use contraction they're instead of possessive their").
+        7. List Marker Immunity: Never include leading bullet symbols (•, ◦, ▪, -, *) or numbered list prefixes (1., 2.) in "original" or "replacement". Only include the words inside the list item.
 
         CATEGORIES:
         - "correctness": Objective spelling, grammar, punctuation, and subject-verb/tense errors.
@@ -402,6 +403,43 @@ public final class LLMService {
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Strips leading bullet or numbered list markers if an LLM included the same prefix in both `original` and `replacement`.
+    /// This prevents pasting duplicate bullets (`• • `) into rich-text list items and ensures `utf16Location` points to the words themselves.
+    public static func stripSharedListMarkerPrefix(
+        original: String,
+        replacement: String
+    ) -> (original: String, replacement: String) {
+        let pattern = #"^(\s*(?:[•◦▪▫▸‣⁃\-\*\+☐☑✓✔]|(?:\d+|[a-zA-Z])[\.\)])\s+)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+            return (original, replacement)
+        }
+
+        let nsOrig = original as NSString
+        let nsRepl = replacement as NSString
+        guard let origMatch = regex.firstMatch(in: original, options: [], range: NSRange(location: 0, length: nsOrig.length)),
+              origMatch.range.location == 0,
+              origMatch.range.length < nsOrig.length else {
+            return (original, replacement)
+        }
+
+        let prefix = nsOrig.substring(with: origMatch.range)
+        let strippedOrig = nsOrig.substring(from: origMatch.range.length)
+
+        if replacement.hasPrefix(prefix), nsRepl.length > origMatch.range.length {
+            let strippedRepl = nsRepl.substring(from: origMatch.range.length)
+            return (strippedOrig, strippedRepl)
+        }
+
+        if let replMatch = regex.firstMatch(in: replacement, options: [], range: NSRange(location: 0, length: nsRepl.length)),
+           replMatch.range.location == 0,
+           replMatch.range.length < nsRepl.length {
+            let strippedRepl = nsRepl.substring(from: replMatch.range.length)
+            return (strippedOrig, strippedRepl)
+        }
+
+        return (original, replacement)
+    }
+
     /// Resolves raw issues against the actual source text to compute UTF-16 `CFRange` offsets.
     public static func resolveIssues(
         _ rawIssues: [ProofreadResult.RawIssue],
@@ -409,13 +447,16 @@ public final class LLMService {
         dictionary: [String]
     ) -> [WritingIssue] {
         let nsText = sourceText as NSString
+        let normNsText = AXEngine.normalizeTypographicCharacters(sourceText) as NSString
         var results: [WritingIssue] = []
         var usedLocations = Set<Int>()
 
         for raw in rawIssues {
-            let orig = raw.original
-            let repl = raw.replacement
-            guard !orig.isEmpty, orig != repl else { continue }
+            let stripped = stripSharedListMarkerPrefix(original: raw.original, replacement: raw.replacement)
+            let orig = stripped.original
+            let repl = stripped.replacement
+            let normOrig = AXEngine.normalizeTypographicCharacters(orig)
+            guard !orig.isEmpty, orig != repl, normOrig != AXEngine.normalizeTypographicCharacters(repl) else { continue }
 
             // Skip if original is in personal dictionary
             if dictionary.contains(where: { $0.caseInsensitiveCompare(orig) == .orderedSame }) {
@@ -424,26 +465,37 @@ public final class LLMService {
 
             let category = IssueCategory(rawValue: raw.category.lowercased()) ?? .correctness
 
-            // Find occurrence in sourceText
-            var searchRange = NSRange(location: 0, length: nsText.length)
+            // Find occurrence in sourceText, preferring whole-word boundary matches first
+            var searchRange = NSRange(location: 0, length: normNsText.length)
             var matchedRange: NSRange?
+            var fallbackPartialRange: NSRange?
 
-            while searchRange.location < nsText.length {
-                let found = nsText.range(of: orig, options: [], range: searchRange)
+            while searchRange.location < normNsText.length {
+                let found = normNsText.range(of: normOrig, options: [], range: searchRange)
                 guard found.location != NSNotFound else { break }
                 if !usedLocations.contains(found.location) {
-                    matchedRange = found
-                    usedLocations.insert(found.location)
-                    break
+                    if AXEngine.isWholeWordMatch(range: found, of: normOrig, in: normNsText) {
+                        matchedRange = found
+                        usedLocations.insert(found.location)
+                        break
+                    } else if fallbackPartialRange == nil {
+                        fallbackPartialRange = found
+                    }
                 }
                 let nextLoc = found.location + max(1, found.length)
-                searchRange = NSRange(location: nextLoc, length: nsText.length - nextLoc)
+                searchRange = NSRange(location: nextLoc, length: normNsText.length - nextLoc)
+            }
+
+            if matchedRange == nil, let partial = fallbackPartialRange {
+                matchedRange = partial
+                usedLocations.insert(partial.location)
             }
 
             if let range = matchedRange {
+                let actualOriginalInSource = nsText.substring(with: range)
                 results.append(
                     WritingIssue(
-                        original: orig,
+                        original: actualOriginalInSource,
                         replacement: repl,
                         category: category,
                         explanation: raw.explanation,

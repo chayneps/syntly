@@ -734,11 +734,25 @@ public struct WritingPadView: View {
 
                 if padIssues.count > 1 {
                     Button("Accept All") {
-                        for issue in padIssues {
-                            if let range = padText.range(of: issue.original) {
-                                padText.replaceSubrange(range, with: issue.replacement)
+                        var workingText = padText
+                        let resolvedPairs: [(issue: WritingIssue, range: NSRange)] = padIssues.compactMap { issue in
+                            let range = AXEngine.findBestOccurrenceRange(
+                                of: issue.original,
+                                preferredUTF16Location: issue.utf16Location,
+                                in: workingText
+                            )
+                            guard range.location != NSNotFound else { return nil }
+                            return (issue, range)
+                        }.sorted { $0.range.location > $1.range.location }
+
+                        var nsWorking = workingText as NSString
+                        for pair in resolvedPairs {
+                            if pair.range.location + pair.range.length <= nsWorking.length {
+                                workingText = nsWorking.replacingCharacters(in: pair.range, with: pair.issue.replacement)
+                                nsWorking = workingText as NSString
                             }
                         }
+                        padText = workingText
                         padIssues.removeAll()
                     }
                     .buttonStyle(.borderedProminent)
@@ -832,10 +846,25 @@ public struct WritingPadView: View {
                             IssueCardRow(
                                 issue: issue,
                                 onAccept: {
-                                    if let range = padText.range(of: issue.original) {
-                                        padText.replaceSubrange(range, with: issue.replacement)
+                                    let nsPad = padText as NSString
+                                    let targetRange = AXEngine.findBestOccurrenceRange(
+                                        of: issue.original,
+                                        preferredUTF16Location: issue.utf16Location,
+                                        in: padText
+                                    )
+                                    let delta = (issue.replacement as NSString).length - (issue.original as NSString).length
+                                    if targetRange.location != NSNotFound && targetRange.location + targetRange.length <= nsPad.length {
+                                        padText = nsPad.replacingCharacters(in: targetRange, with: issue.replacement)
                                     }
-                                    padIssues.removeAll { $0.id == issue.id }
+                                    let replacedLoc = targetRange.location != NSNotFound ? targetRange.location : (issue.utf16Location ?? 0)
+                                    var updatedIssues: [WritingIssue] = []
+                                    for var remaining in padIssues where remaining.id != issue.id {
+                                        if let loc = remaining.utf16Location, loc > replacedLoc {
+                                            remaining.utf16Location = max(0, loc + delta)
+                                        }
+                                        updatedIssues.append(remaining)
+                                    }
+                                    padIssues = updatedIssues
                                 },
                                 onDismiss: {
                                     padIssues.removeAll { $0.id == issue.id }

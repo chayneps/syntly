@@ -715,4 +715,538 @@ final class SyntlyEndToEndTests: XCTestCase {
         let models = try await service.fetchAvailableModels(endpoint: "http://127.0.0.1:8317/v1", token: "test-token")
         XCTAssertEqual(models, ["claude-3-5-sonnet", "gemini-3.8-flash-high", "gpt-4o-mini"])
     }
+
+    // MARK: - 3. Bullet Point & Numbered List Replacement Tests (Slack / Chromium DOM Drift)
+
+    func testReproduceAndFixSlackBulletPointReplacementShift() throws {
+        // Exact text from the user's Slack screenshot:
+        let initialSlackText = "Not sure what's going on here:\n• Let try this\n• Let also try his"
+        let mockSlack = SimulatedSlackBulletAXAccessor(axValueText: initialSlackText)
+
+        // 1. Reproduce why uncalibrated replacement produced "• LeLet's alsory his":
+        // In `kAXValueAttribute`, "Let also" is at UTF-16 range (48, 8).
+        let nsValue = initialSlackText as NSString
+        let rawRangeInAXValue = nsValue.range(of: "Let also")
+        XCTAssertEqual(rawRangeInAXValue, NSRange(location: 48, length: 8))
+
+        // In Slack/Chromium's DOM selection space (`kAXSelectedTextRangeAttribute`), each "• " (2 chars in AXValue)
+        // counts as 1 list marker unit ("•"). After 2 bullets, selecting (48, 8) actually selects "t also t"!
+        let uncalibratedSelected = mockSlack.selectedTextIfRangeSet(rawRangeInAXValue)
+        XCTAssertEqual(uncalibratedSelected, "t also t", "Uncalibrated (48, 8) in Slack DOM selects 't also t' (+2 shift)")
+        let corruptedIfUncalibrated = mockSlack.textIfReplacedWithoutCalibration(range: rawRangeInAXValue, replacement: "Let's also")
+        XCTAssertEqual(
+            corruptedIfUncalibrated,
+            "Not sure what's going on here:\n• Let try this\n• LeLet's alsory his",
+            "Uncalibrated replacement reproduces the exact screenshot corruption '• LeLet's alsory his'"
+        )
+
+        // 2. Verify AXEngine.applyIssueReplacement calibrates the selection to (46, 8) ("Let also") and replaces cleanly:
+        axEngine.elementAccessor = mockSlack
+        axEngine.setTestingFocusedElement(AXUIElementCreateSystemWide())
+
+        let issue = WritingIssue(
+            original: "Let also",
+            replacement: "Let's also",
+            category: .correctness,
+            explanation: "Use contraction Let's instead of verb Let.",
+            utf16Location: rawRangeInAXValue.location,
+            utf16Length: rawRangeInAXValue.length
+        )
+
+        let success = axEngine.applyIssueReplacement(issue, in: initialSlackText)
+        XCTAssertTrue(success)
+        XCTAssertEqual(mockSlack.selectedRangeInDOM, NSRange(location: 46, length: 8))
+        XCTAssertEqual(
+            mockSlack.axValueText,
+            "Not sure what's going on here:\n• Let try this\n• Let's also try his"
+        )
+    }
+
+    func testConsecutiveMultiBulletReplacementsIncludingEndOfTextWord() async throws {
+        let initialSlackText = "Not sure what's going on here:\n• Let try this\n• Let also try his"
+        let mockSlack = SimulatedSlackBulletAXAccessor(axValueText: initialSlackText)
+        axEngine.elementAccessor = mockSlack
+        axEngine.setTestingFocusedElement(AXUIElementCreateSystemWide())
+
+        MockGeminiURLProtocol.requestHandler = { request in
+            let response = """
+            {
+              "choices": [
+                {
+                  "message": {
+                    "content": "{\\"issues\\": [{\\"original\\": \\"Let try\\", \\"replacement\\": \\"Let's try\\", \\"category\\": \\"correctness\\", \\"explanation\\": \\"Use contraction Let's.\\"}, {\\"original\\": \\"Let also\\", \\"replacement\\": \\"Let's also\\", \\"category\\": \\"correctness\\", \\"explanation\\": \\"Use contraction Let's.\\"}, {\\"original\\": \\"his\\", \\"replacement\\": \\"this\\", \\"category\\": \\"correctness\\", \\"explanation\\": \\"Typo for this.\\"}]}"
+                  }
+                }
+              ]
+            }
+            """
+            let httpResponse = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            return (httpResponse, Data(response.utf8))
+        }
+
+        // Cursor is on the 2nd bullet point (location 55), just like when typing a bulleted list in Slack
+        let slackContext = FocusedTextContext(
+            appName: "Slack",
+            bundleID: "com.tinyspeck.slackmacgap",
+            pid: 4321,
+            fullText: initialSlackText,
+            selectedText: nil,
+            selectedRange: NSRange(location: 55, length: 0)
+        )
+        coordinator.axEngineDidUpdateContext(slackContext)
+        try await Task.sleep(nanoseconds: 220_000_000)
+
+        XCTAssertEqual(coordinator.issues.count, 3)
+        XCTAssertEqual(coordinator.issues[0].original, "Let try")
+        XCTAssertEqual(coordinator.issues[1].original, "Let also")
+        XCTAssertEqual(coordinator.issues[2].original, "his")
+
+        // 1. Accept first bullet issue ("Let try" -> "Let's try")
+        coordinator.acceptIssue(coordinator.issues[0])
+        XCTAssertEqual(
+            mockSlack.axValueText,
+            "Not sure what's going on here:\n• Let's try this\n• Let also try his"
+        )
+        XCTAssertEqual(coordinator.issues.count, 2)
+
+        // 2. Accept second bullet issue ("Let also" -> "Let's also") immediately without re-polling
+        coordinator.acceptIssue(coordinator.issues[0])
+        XCTAssertEqual(
+            mockSlack.axValueText,
+            "Not sure what's going on here:\n• Let's try this\n• Let's also try his"
+        )
+        XCTAssertEqual(coordinator.issues.count, 1)
+
+        // 3. Accept third issue at the very end of the 2nd bullet ("his" -> "this")
+        coordinator.acceptIssue(coordinator.issues[0])
+        XCTAssertEqual(
+            mockSlack.axValueText,
+            "Not sure what's going on here:\n• Let's try this\n• Let's also try this"
+        )
+        XCTAssertEqual(coordinator.issues.count, 0)
+    }
+
+    func testDuplicatePhraseAcrossMultipleBulletsReplacesTargetedBullet() {
+        // Both bullets contain "Let try"
+        let initialSlackText = "Action items:\n• Let try option A\n• Let try option B"
+        let mockSlack = SimulatedSlackBulletAXAccessor(axValueText: initialSlackText)
+        axEngine.elementAccessor = mockSlack
+        axEngine.setTestingFocusedElement(AXUIElementCreateSystemWide())
+
+        let rawIssues = [
+            ProofreadResult.RawIssue(original: "Let try", replacement: "Let's try", category: "correctness", explanation: "Use Let's."),
+            ProofreadResult.RawIssue(original: "Let try", replacement: "Let's try", category: "correctness", explanation: "Use Let's.")
+        ]
+        let resolved = GeminiService.resolveIssues(rawIssues, in: initialSlackText, dictionary: [])
+        XCTAssertEqual(resolved.count, 2)
+        XCTAssertNotEqual(resolved[0].utf16Location, resolved[1].utf16Location)
+
+        // User clicks Accept on the 2nd bullet's issue FIRST:
+        let secondBulletIssue = resolved[1]
+        let ok = axEngine.applyIssueReplacement(secondBulletIssue, in: initialSlackText)
+        XCTAssertTrue(ok)
+        XCTAssertEqual(
+            mockSlack.axValueText,
+            "Action items:\n• Let try option A\n• Let's try option B",
+            "Accepting the 2nd bullet's issue must replace the 2nd bullet, not the 1st bullet"
+        )
+    }
+
+    func testNumberedListOffsetDriftAndSharedListMarkerStripping() {
+        // 1. Test stripping shared bullet/numbered list prefixes if an LLM includes them in original & replacement
+        let strippedBullet = GeminiService.stripSharedListMarkerPrefix(
+            original: "• Let also",
+            replacement: "• Let's also"
+        )
+        XCTAssertEqual(strippedBullet.original, "Let also")
+        XCTAssertEqual(strippedBullet.replacement, "Let's also")
+
+        let strippedNumbered = GeminiService.stripSharedListMarkerPrefix(
+            original: "2. Let also",
+            replacement: "2. Let's also"
+        )
+        XCTAssertEqual(strippedNumbered.original, "Let also")
+        XCTAssertEqual(strippedNumbered.replacement, "Let's also")
+
+        // 2. Test numbered list replacement in Chromium where "1. " (3 chars) counts as 1 unit in DOM selection (-2 drift per item)
+        let numberedText = "Steps:\n1. Let try this\n2. Let also try his"
+        let mockNumbered = SimulatedSlackBulletAXAccessor(axValueText: numberedText)
+        axEngine.elementAccessor = mockNumbered
+        axEngine.setTestingFocusedElement(AXUIElementCreateSystemWide())
+
+        let resolved = GeminiService.resolveIssues(
+            [ProofreadResult.RawIssue(original: "• Let also", replacement: "• Let's also", category: "correctness", explanation: "Fix")],
+            in: numberedText,
+            dictionary: []
+        )
+        XCTAssertEqual(resolved.count, 1)
+        XCTAssertEqual(resolved[0].original, "Let also")
+
+        let success = axEngine.applyIssueReplacement(resolved[0], in: numberedText)
+        XCTAssertTrue(success)
+        XCTAssertEqual(
+            mockNumbered.axValueText,
+            "Steps:\n1. Let try this\n2. Let's also try his"
+        )
+    }
+
+    func testEmojiAndZWJSequencesWithBulletsReplacement() {
+        // Surrogate pair 🚀 (2 UTF-16 units), skin-tone modifier 👋🏽 (4 UTF-16 units), and ZWJ sequence 👩‍💻 (5 UTF-16 units)
+        let emojiBulletText = "Hey 👋🏽 team 🚀:\n• 👩‍💻 Let try this\n• Let also deploy 🚀 tonight"
+        let mockSlack = SimulatedSlackBulletAXAccessor(axValueText: emojiBulletText)
+        axEngine.elementAccessor = mockSlack
+        axEngine.setTestingFocusedElement(AXUIElementCreateSystemWide())
+
+        let rawIssues = [
+            ProofreadResult.RawIssue(original: "Let try", replacement: "Let's try", category: "correctness", explanation: "Use Let's."),
+            ProofreadResult.RawIssue(original: "Let also", replacement: "Let's also", category: "correctness", explanation: "Use Let's.")
+        ]
+        let resolved = GeminiService.resolveIssues(rawIssues, in: emojiBulletText, dictionary: [])
+        XCTAssertEqual(resolved.count, 2)
+
+        // Replace 2nd bullet first (after all emojis and 2 bullet markers)
+        XCTAssertTrue(axEngine.applyIssueReplacement(resolved[1], in: mockSlack.axValueText))
+        XCTAssertEqual(
+            mockSlack.axValueText,
+            "Hey 👋🏽 team 🚀:\n• 👩‍💻 Let try this\n• Let's also deploy 🚀 tonight"
+        )
+
+        // Replace 1st bullet next (immediately following 5-unit ZWJ emoji 👩‍💻)
+        XCTAssertTrue(axEngine.applyIssueReplacement(resolved[0], in: mockSlack.axValueText))
+        XCTAssertEqual(
+            mockSlack.axValueText,
+            "Hey 👋🏽 team 🚀:\n• 👩‍💻 Let's try this\n• Let's also deploy 🚀 tonight"
+        )
+    }
+
+    func testNonBreakingSpaceAndSmartCurlyQuotesInContentEditable() {
+        // HTML contenteditable (Slack, Chrome, Notion, Safari) frequently inserts \u{00A0} (&nbsp;)
+        // and macOS Smart Quotes converts ' to ’ (\u{2019}).
+        // Meanwhile, the LLM returns standard ASCII spaces ' ' and straight apostrophes '''.
+        let nbspAndCurlyText = "Update:\n• We\u{00A0}don’t\u{00A0}has time\n• Let\u{00A0}also\u{00A0}check it’s status"
+        let mockSlack = SimulatedSlackBulletAXAccessor(axValueText: nbspAndCurlyText)
+        axEngine.elementAccessor = mockSlack
+        axEngine.setTestingFocusedElement(AXUIElementCreateSystemWide())
+
+        // LLM issues use standard ASCII spaces and straight apostrophes
+        let rawIssues = [
+            ProofreadResult.RawIssue(original: "don't has", replacement: "don't have", category: "correctness", explanation: "Use have."),
+            ProofreadResult.RawIssue(original: "Let also", replacement: "Let's also", category: "correctness", explanation: "Use Let's."),
+            ProofreadResult.RawIssue(original: "it's status", replacement: "its status", category: "correctness", explanation: "Possessive its.")
+        ]
+        let resolved = GeminiService.resolveIssues(rawIssues, in: nbspAndCurlyText, dictionary: [])
+        XCTAssertEqual(resolved.count, 3, "Must resolve all 3 issues despite \\u{00A0} and curly apostrophes ’")
+
+        XCTAssertTrue(axEngine.applyIssueReplacement(resolved[2], in: mockSlack.axValueText))
+        XCTAssertTrue(axEngine.applyIssueReplacement(resolved[1], in: mockSlack.axValueText))
+        XCTAssertTrue(axEngine.applyIssueReplacement(resolved[0], in: mockSlack.axValueText))
+
+        XCTAssertEqual(
+            mockSlack.axValueText,
+            "Update:\n• We\u{00A0}don't have time\n• Let's also\u{00A0}check its status"
+        )
+    }
+
+    func testIndentedNestedBulletsAndCRLFLinesReplacement() {
+        // 1. Indented multi-level bullets ("  ◦ ", "    ▪ ") where leading indentation + bullet collapses to 1 marker unit in DOM
+        let nestedListText = "Roadmap:\n• Let try phase 1\n  ◦ Let also test phase 2\n    ▪ Teh final check"
+        let mockNested = SimulatedSlackBulletAXAccessor(axValueText: nestedListText)
+        axEngine.elementAccessor = mockNested
+        axEngine.setTestingFocusedElement(AXUIElementCreateSystemWide())
+
+        let rawNested = [
+            ProofreadResult.RawIssue(original: "Let try", replacement: "Let's try", category: "correctness", explanation: "Fix"),
+            ProofreadResult.RawIssue(original: "Let also", replacement: "Let's also", category: "correctness", explanation: "Fix"),
+            ProofreadResult.RawIssue(original: "Teh", replacement: "The", category: "correctness", explanation: "Fix")
+        ]
+        let resolvedNested = GeminiService.resolveIssues(rawNested, in: nestedListText, dictionary: [])
+        XCTAssertEqual(resolvedNested.count, 3)
+
+        // Apply bottom-up so earlier offsets don't shift
+        XCTAssertTrue(axEngine.applyIssueReplacement(resolvedNested[2], in: mockNested.axValueText))
+        XCTAssertTrue(axEngine.applyIssueReplacement(resolvedNested[1], in: mockNested.axValueText))
+        XCTAssertTrue(axEngine.applyIssueReplacement(resolvedNested[0], in: mockNested.axValueText))
+
+        XCTAssertEqual(
+            mockNested.axValueText,
+            "Roadmap:\n• Let's try phase 1\n  ◦ Let's also test phase 2\n    ▪ The final check"
+        )
+
+        // 2. CRLF (\r\n) line breaks in AXValue vs LF (\n) in DOM selection
+        let crlfText = "Line one:\r\n• Let try this\r\n• Let also try his"
+        let mockCRLF = SimulatedSlackBulletAXAccessor(axValueText: crlfText, collapseCRLFInDOM: true)
+        axEngine.elementAccessor = mockCRLF
+
+        let resolvedCRLF = GeminiService.resolveIssues(
+            [
+                ProofreadResult.RawIssue(original: "Let also", replacement: "Let's also", category: "correctness", explanation: "Fix"),
+                ProofreadResult.RawIssue(original: "his", replacement: "this", category: "correctness", explanation: "Fix")
+            ],
+            in: crlfText,
+            dictionary: []
+        )
+        XCTAssertEqual(resolvedCRLF.count, 2)
+        XCTAssertTrue(axEngine.applyIssueReplacement(resolvedCRLF[1], in: mockCRLF.axValueText))
+        XCTAssertTrue(axEngine.applyIssueReplacement(resolvedCRLF[0], in: mockCRLF.axValueText))
+        XCTAssertEqual(
+            mockCRLF.axValueText,
+            "Line one:\r\n• Let try this\r\n• Let's also try this"
+        )
+    }
+
+    func testWhileYouTypeLiveUserEditsBeforeClickingAcceptAndSafetyGuardrails() {
+        // Initial text when proofread ran:
+        let analyzedSnapshot = "Notes:\n• Let try this\n• Let also"
+        let resolved = GeminiService.resolveIssues(
+            [ProofreadResult.RawIssue(original: "Let also", replacement: "Let's also", category: "correctness", explanation: "Fix")],
+            in: analyzedSnapshot,
+            dictionary: []
+        )
+        XCTAssertEqual(resolved.count, 1)
+        let staleIssue = resolved[0]
+
+        // Scenario A & B: User typed both BEFORE ("Quick ") and AFTER (" try this now") before clicking Accept!
+        let mutatedLiveText = "Quick Notes:\n• Let try this\n• Let also try this now"
+        let mockLive = SimulatedSlackBulletAXAccessor(axValueText: mutatedLiveText)
+        axEngine.elementAccessor = mockLive
+        axEngine.setTestingFocusedElement(AXUIElementCreateSystemWide())
+
+        let replacedAfterLiveTyping = axEngine.applyIssueReplacement(staleIssue, in: analyzedSnapshot)
+        XCTAssertTrue(replacedAfterLiveTyping)
+        XCTAssertEqual(
+            mockLive.axValueText,
+            "Quick Notes:\n• Let try this\n• Let's also try this now",
+            "Even if the user typed before/after the issue before clicking Accept, live relocation + calibration must replace accurately"
+        )
+
+        // Scenario C: User already manually fixed "Let's also" before clicking Accept on the stale suggestion card
+        let alreadyFixedByUser = axEngine.applyIssueReplacement(staleIssue, in: mockLive.axValueText)
+        XCTAssertFalse(alreadyFixedByUser, "Must return false and never corrupt text if user already fixed/deleted the original word")
+        XCTAssertEqual(mockLive.axValueText, "Quick Notes:\n• Let try this\n• Let's also try this now")
+
+        // Scenario D: If DOM selection reports completely unrelated uncalibratable text, must abort rather than overwrite
+        mockLive.forceUnrelatedSelectedText = "UNRELATED_SELECTION"
+        let issueForTry = WritingIssue(
+            original: "Let try",
+            replacement: "Let's try",
+            category: .correctness,
+            explanation: "Fix",
+            utf16Location: 15,
+            utf16Length: 7
+        )
+        let aborted = axEngine.applyIssueReplacement(issueForTry, in: mockLive.axValueText)
+        XCTAssertFalse(aborted, "Must abort if kAXSelectedTextAttribute cannot be calibrated to match issue.original")
+        XCTAssertEqual(mockLive.axValueText, "Quick Notes:\n• Let try this\n• Let's also try this now")
+    }
+
+    func testShrinkingAndExpandingReplacementsAndAcceptAllOnBulletedList() async throws {
+        // Combines shrinking ("due to the fact that" -> "because", -13 chars),
+        // expanding ("Let also" -> "Let's also", +2 chars),
+        // and equal-length ("teh" -> "the", 0 chars) across bullets
+        let initialText = "Summary:\n• Delayed due to the fact that traffic is heavy\n• Let also fix teh deployment"
+        let mockSlack = SimulatedSlackBulletAXAccessor(axValueText: initialText)
+        axEngine.elementAccessor = mockSlack
+        axEngine.setTestingFocusedElement(AXUIElementCreateSystemWide())
+
+        MockGeminiURLProtocol.requestHandler = { request in
+            let response = """
+            {
+              "choices": [
+                {
+                  "message": {
+                    "content": "{\\"issues\\": [{\\"original\\": \\"due to the fact that\\", \\"replacement\\": \\"because\\", \\"category\\": \\"clarity\\", \\"explanation\\": \\"Concise\\"}, {\\"original\\": \\"Let also\\", \\"replacement\\": \\"Let's also\\", \\"category\\": \\"correctness\\", \\"explanation\\": \\"Contraction\\"}, {\\"original\\": \\"teh\\", \\"replacement\\": \\"the\\", \\"category\\": \\"correctness\\", \\"explanation\\": \\"Spelling\\"}]}"
+                  }
+                }
+              ]
+            }
+            """
+            let httpResponse = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            return (httpResponse, Data(response.utf8))
+        }
+
+        let ctx = FocusedTextContext(
+            appName: "Slack",
+            bundleID: "com.tinyspeck.slackmacgap",
+            pid: 4321,
+            fullText: initialText,
+            selectedText: nil,
+            selectedRange: NSRange(location: 40, length: 0)
+        )
+        coordinator.axEngineDidUpdateContext(ctx)
+        try await Task.sleep(nanoseconds: 220_000_000)
+
+        XCTAssertEqual(coordinator.issues.count, 3)
+
+        // 1. Accept shrinking issue on Bullet 1 (-13 UTF-16 units)
+        coordinator.acceptIssue(coordinator.issues[0])
+        XCTAssertEqual(
+            mockSlack.axValueText,
+            "Summary:\n• Delayed because traffic is heavy\n• Let also fix teh deployment"
+        )
+        // Subsequent issues on Bullet 2 must have shifted by -13 units so accepting them next hits the exact range!
+        coordinator.acceptIssue(coordinator.issues[0])
+        XCTAssertEqual(
+            mockSlack.axValueText,
+            "Summary:\n• Delayed because traffic is heavy\n• Let's also fix teh deployment"
+        )
+        coordinator.acceptIssue(coordinator.issues[0])
+        XCTAssertEqual(
+            mockSlack.axValueText,
+            "Summary:\n• Delayed because traffic is heavy\n• Let's also fix the deployment"
+        )
+    }
+}
+
+// MARK: - Simulated Slack / Chromium Rich-Text List AXUIElement Accessor
+
+/// Faithfully models Chromium/Electron (`<ul><li>` and `<ol><li>`) Accessibility behavior:
+/// - `kAXValueAttribute` serializes each bullet item with `"• "` (2 UTF-16 units), indented sub-bullets (`"  ◦ "`), or `"1. "` (3+ UTF-16 units).
+/// - `kAXSelectedTextRangeAttribute` and `kAXSelectedTextAttribute` operate in DOM selection coordinates where
+///   each list item marker counts as 1 unit (`"•"`), causing a cumulative offset shift per list item.
+final class SimulatedSlackBulletAXAccessor: AXElementAccessing {
+    var axValueText: String
+    var selectedRangeInDOM: NSRange = NSRange(location: 0, length: 0)
+    var collapseCRLFInDOM: Bool
+    var forceUnrelatedSelectedText: String?
+
+    init(axValueText: String, collapseCRLFInDOM: Bool = false) {
+        self.axValueText = axValueText
+        self.collapseCRLFInDOM = collapseCRLFInDOM
+    }
+
+    private func markerLengthInAXLine(_ line: String) -> Int {
+        let nsLine = line as NSString
+        if let regex = try? NSRegularExpression(pattern: #"^\s*(?:[•◦▪▫▸‣⁃\-\*\+☐☑✓✔]|(?:\d+|[a-zA-Z])[\.\)])\s+"#),
+           let match = regex.firstMatch(in: line, options: [], range: NSRange(location: 0, length: nsLine.length)),
+           match.range.location == 0 {
+            return match.range.length
+        }
+        return 0
+    }
+
+    /// Builds the DOM selection string where each line-leading list marker is represented as a single 1-unit marker `"•"`.
+    private var domSelectionText: String {
+        let normalizedNewlines = collapseCRLFInDOM ? axValueText.replacingOccurrences(of: "\r\n", with: "\n") : axValueText
+        let lines = normalizedNewlines.components(separatedBy: "\n")
+        let mapped = lines.map { line -> String in
+            let markerLen = markerLengthInAXLine(line)
+            if markerLen > 0 {
+                let rest = (line as NSString).substring(from: markerLen)
+                return "•" + rest
+            }
+            return line
+        }
+        return mapped.joined(separator: "\n")
+    }
+
+    func selectedTextIfRangeSet(_ range: NSRange) -> String {
+        if let forced = forceUnrelatedSelectedText {
+            return forced
+        }
+        let nsDOM = domSelectionText as NSString
+        guard range.location >= 0, range.location < nsDOM.length else { return "" }
+        let clampedLen = min(range.length, nsDOM.length - range.location)
+        return nsDOM.substring(with: NSRange(location: range.location, length: max(0, clampedLen)))
+    }
+
+    func textIfReplacedWithoutCalibration(range: NSRange, replacement: String) -> String {
+        let savedText = axValueText
+        let savedSel = selectedRangeInDOM
+        defer {
+            axValueText = savedText
+            selectedRangeInDOM = savedSel
+        }
+        selectedRangeInDOM = range
+        _ = performPaste(replacement)
+        return axValueText
+    }
+
+    func copyString(_ element: AXUIElement, attribute: String) -> String? {
+        if attribute == (kAXValueAttribute as String) {
+            return axValueText
+        }
+        if attribute == (kAXSelectedTextAttribute as String) {
+            return selectedTextIfRangeSet(selectedRangeInDOM)
+        }
+        if attribute == (kAXRoleAttribute as String) {
+            return "AXTextArea"
+        }
+        return nil
+    }
+
+    func copyRange(_ element: AXUIElement, attribute: String) -> NSRange? {
+        if attribute == (kAXSelectedTextRangeAttribute as String) {
+            return selectedRangeInDOM
+        }
+        return nil
+    }
+
+    func setRange(_ element: AXUIElement, attribute: String, range: NSRange) -> AXError {
+        if attribute == (kAXSelectedTextRangeAttribute as String) {
+            let nsDOM = domSelectionText as NSString
+            let clampedLoc = max(0, min(range.location, nsDOM.length))
+            let clampedLen = max(0, min(range.length, nsDOM.length - clampedLoc))
+            selectedRangeInDOM = NSRange(location: clampedLoc, length: clampedLen)
+            return .success
+        }
+        return .failure
+    }
+
+    func setString(_ element: AXUIElement, attribute: String, value: String) -> AXError {
+        return .attributeUnsupported
+    }
+
+    func isChromiumOrElectron(_ element: AXUIElement) -> Bool? {
+        return true
+    }
+
+    func performPaste(_ text: String) -> Bool {
+        // Map `selectedRangeInDOM` back into `axValueText` to mutate the underlying rich-text lines
+        let separator = (collapseCRLFInDOM && axValueText.contains("\r\n")) ? "\r\n" : "\n"
+        let sepLen = (separator as NSString).length
+        let lines = axValueText.components(separatedBy: separator)
+        var domOffset = 0
+        var axOffset = 0
+        var axStart = 0
+        var axEnd = 0
+        let domStart = selectedRangeInDOM.location
+        let domEnd = selectedRangeInDOM.location + selectedRangeInDOM.length
+
+        var foundStart = false
+        var foundEnd = false
+
+        for (i, line) in lines.enumerated() {
+            let nsLine = line as NSString
+            let markerAXLen = markerLengthInAXLine(line)
+            let markerDOMLen = markerAXLen > 0 ? 1 : 0
+            let contentLen = nsLine.length - markerAXLen
+            let lineDOMLen = markerDOMLen + contentLen
+
+            if !foundStart && domStart <= domOffset + lineDOMLen {
+                let relDOM = domStart - domOffset
+                let relAX = relDOM == 0 ? 0 : markerAXLen + max(0, relDOM - markerDOMLen)
+                axStart = axOffset + relAX
+                foundStart = true
+            }
+            if !foundEnd && domEnd <= domOffset + lineDOMLen {
+                let relDOM = domEnd - domOffset
+                let relAX = relDOM == 0 ? 0 : markerAXLen + max(0, relDOM - markerDOMLen)
+                axEnd = axOffset + relAX
+                foundEnd = true
+            }
+
+            domOffset += lineDOMLen + (i < lines.count - 1 ? 1 : 0)
+            axOffset += nsLine.length + (i < lines.count - 1 ? sepLen : 0)
+        }
+
+        let nsAX = axValueText as NSString
+        if foundStart && foundEnd && axEnd >= axStart && axEnd <= nsAX.length {
+            axValueText = nsAX.replacingCharacters(
+                in: NSRange(location: axStart, length: axEnd - axStart),
+                with: text
+            )
+            return true
+        }
+        return false
+    }
 }

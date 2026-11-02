@@ -113,10 +113,17 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             self.axEngine.pollCurrentFocusedElement()
             self.isPopoverExpanded.toggle()
             if self.isPopoverExpanded, let ctx = self.currentContext {
-                self.triggerImmediateCheck(for: ctx.activeParagraph)
+                self.triggerImmediateCheck(for: ctx.analysisText, baseOffset: ctx.analysisRange.location)
             }
             self.onOverlayStateChanged?()
         }
+    }
+
+    private static func offsetIssue(_ issue: WritingIssue, by baseOffset: Int) -> WritingIssue {
+        guard baseOffset > 0, let loc = issue.utf16Location else { return issue }
+        var copy = issue
+        copy.utf16Location = loc + baseOffset
+        return copy
     }
 
     // MARK: - AXEngineDelegate
@@ -176,7 +183,9 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             return
         }
 
-        let paragraph = ctx.activeParagraph
+        let analysisRange = ctx.analysisRange
+        let paragraph = ctx.analysisText
+        let baseOffset = analysisRange.location
         let trimmed = paragraph.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard trimmed.count >= 3 else {
@@ -194,9 +203,9 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         }
 
         // 1. Instant local spellcheck (<5ms)
-        let localIssues = geminiService.runLocalSpellcheck(on: paragraph).filter {
-            !dismissedOriginals.contains($0.original)
-        }
+        let localIssues = geminiService.runLocalSpellcheck(on: paragraph)
+            .filter { !dismissedOriginals.contains($0.original) }
+            .map { Self.offsetIssue($0, by: baseOffset) }
         if !localIssues.isEmpty && issues.isEmpty {
             issues = localIssues
             pillState = .issuesFound(count: localIssues.count, topCategory: .correctness)
@@ -214,22 +223,23 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         debounceTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
             guard !Task.isCancelled else { return }
-            await self?.performProofread(on: paragraph, localPreIssues: localIssues)
+            await self?.performProofread(on: paragraph, localPreIssues: localIssues, baseOffset: baseOffset)
         }
     }
 
-    public func triggerImmediateCheck(for text: String) {
+    public func triggerImmediateCheck(for text: String, baseOffset: Int = 0) {
         debounceTask?.cancel()
         let localIssues = geminiService.runLocalSpellcheck(on: text)
+            .map { Self.offsetIssue($0, by: baseOffset) }
         pillState = .checking
         onOverlayStateChanged?()
 
         debounceTask = Task { [weak self] in
-            await self?.performProofread(on: text, localPreIssues: localIssues)
+            await self?.performProofread(on: text, localPreIssues: localIssues, baseOffset: baseOffset)
         }
     }
 
-    private func performProofread(on text: String, localPreIssues: [WritingIssue]) async {
+    private func performProofread(on text: String, localPreIssues: [WritingIssue], baseOffset: Int = 0) async {
         do {
             let aiIssues = try await geminiService.proofread(text: text)
             guard !Task.isCancelled else { return }
@@ -237,7 +247,9 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             lastAnalyzedParagraph = text
             lastErrorMessage = nil
 
-            var combined = aiIssues.filter { !dismissedOriginals.contains($0.original) }
+            var combined = aiIssues
+                .filter { !dismissedOriginals.contains($0.original) }
+                .map { Self.offsetIssue($0, by: baseOffset) }
             for local in localPreIssues where !dismissedOriginals.contains(local.original) {
                 if !combined.contains(where: { $0.original.localizedCaseInsensitiveContains(local.original) }) {
                     combined.append(local)
@@ -271,15 +283,22 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
 
     public func acceptIssue(_ issue: WritingIssue) {
         let currentText = currentContext?.fullText ?? lastAnalyzedParagraph
+        let matchedRange = AXEngine.findBestOccurrenceRange(
+            of: issue.original,
+            preferredUTF16Location: issue.utf16Location,
+            in: currentText
+        )
         _ = axEngine.applyIssueReplacement(issue, in: currentText)
 
         onIssueAccepted?(issue)
 
-        if currentContext?.bundleID == "dev.syntly.demo",
-           let current = currentContext {
-            if let range = current.fullText.range(of: issue.original) {
-                var updated = current.fullText
-                updated.replaceSubrange(range, with: issue.replacement)
+        let delta = (issue.replacement as NSString).length - (issue.original as NSString).length
+        let replacedLoc = matchedRange.location != NSNotFound ? matchedRange.location : (issue.utf16Location ?? 0)
+
+        if let current = currentContext, matchedRange.location != NSNotFound {
+            let nsCurrent = current.fullText as NSString
+            if matchedRange.location + matchedRange.length <= nsCurrent.length {
+                let updated = nsCurrent.replacingCharacters(in: matchedRange, with: issue.replacement)
                 self.currentContext = FocusedTextContext(
                     appName: current.appName,
                     bundleID: current.bundleID,
@@ -289,10 +308,19 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
                     selectedRange: current.selectedRange,
                     anchorAppKitPoint: current.anchorAppKitPoint
                 )
+                self.lastAnalyzedParagraph = updated
             }
         }
 
-        issues.removeAll { $0.id == issue.id }
+        // Shift UTF-16 offsets of remaining issues located after the accepted issue
+        var remaining: [WritingIssue] = []
+        for var item in issues where item.id != issue.id {
+            if let loc = item.utf16Location, loc > replacedLoc {
+                item.utf16Location = max(0, loc + delta)
+            }
+            remaining.append(item)
+        }
+        issues = remaining
         updatePillStateFromIssues()
 
         if issues.isEmpty && isPopoverExpanded {
@@ -306,17 +334,31 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             return
         }
         let accepted = self.issues
-        for issue in issues {
-            if let range = workingText.range(of: issue.original) {
-                workingText.replaceSubrange(range, with: issue.replacement)
+
+        // Resolve ranges in workingText and apply from end to start so earlier replacements never shift later ranges
+        let resolvedPairs: [(issue: WritingIssue, range: NSRange)] = issues.compactMap { issue in
+            let range = AXEngine.findBestOccurrenceRange(
+                of: issue.original,
+                preferredUTF16Location: issue.utf16Location,
+                in: workingText
+            )
+            guard range.location != NSNotFound else { return nil }
+            return (issue, range)
+        }.sorted { $0.range.location > $1.range.location }
+
+        var nsWorking = workingText as NSString
+        for pair in resolvedPairs {
+            if pair.range.location + pair.range.length <= nsWorking.length {
+                workingText = nsWorking.replacingCharacters(in: pair.range, with: pair.issue.replacement)
+                nsWorking = workingText as NSString
             }
         }
+
         _ = axEngine.replaceSelectedOrFullText(with: workingText)
 
         onAllIssuesAccepted?(accepted, workingText)
 
-        if currentContext?.bundleID == "dev.syntly.demo",
-           let current = currentContext {
+        if let current = currentContext {
             self.currentContext = FocusedTextContext(
                 appName: current.appName,
                 bundleID: current.bundleID,
@@ -326,6 +368,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
                 selectedRange: current.selectedRange,
                 anchorAppKitPoint: current.anchorAppKitPoint
             )
+            self.lastAnalyzedParagraph = workingText
         }
 
         issues.removeAll()
