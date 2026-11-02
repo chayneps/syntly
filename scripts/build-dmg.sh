@@ -59,36 +59,68 @@ cp -R "${APP_NAME}.app" "$DMG_STAGING_DIR/"
 # Create standard macOS drag-and-drop link to /Applications
 ln -s /Applications "$DMG_STAGING_DIR/Applications"
 
-# Add First Launch guide for Gatekeeper
-cat << 'EOF' > "$DMG_STAGING_DIR/First Launch (Please Read).txt"
-======================================================
-  Synt(ax)ly — macOS First Launch Guide
-======================================================
+# Add First Launch guide for Installation & Gatekeeper
+cat << 'EOF' > "$DMG_STAGING_DIR/PLEASE READ - How to Install.txt"
+========================================================================
+             Synt(ax)ly — Installation & Setup Guide
+========================================================================
 
-1. Drag "Syntly.app" into your "Applications" folder.
+STEP 1: INSTALLATION
+------------------------------------------------------------------------
+👉 Drag "Syntly.app" into the "Applications" folder shortcut right here.
 
-2. On macOS 14 / 15 (Sonoma / Sequoia), Apple Gatekeeper
-   flags apps downloaded from the internet. If you see:
-   "Apple could not verify Syntly.app is free of malware"
 
-   Simply do ONE of the following:
+STEP 2: OVERCOMING THE "UNKNOWN DEVELOPER" / MALWARE WARNING
+------------------------------------------------------------------------
+Because Synt(ax)ly is an open-source project without a paid $99/year
+Apple Developer ID certificate, macOS Gatekeeper blocks it on first launch:
 
-   Option A (System Settings — 2 clicks):
-   --------------------------------------
-   1. Click "Done" on the alert dialog.
-   2. Open System Settings -> Privacy & Security.
-   3. Scroll down to the "Security" section.
-   4. Click "Open Anyway" next to Syntly.app.
+  "Apple could not verify 'Syntly.app' is free of malware"
 
-   Option B (Terminal — Instant command):
-   --------------------------------------
-   Open Terminal and paste:
+This is because macOS defaults to "App Store & Known Developers".
+On modern macOS, clicking "Open Anyway" often fails or loops.
+
+Use either method below to launch Synt(ax)ly in seconds:
+
+METHOD 1: Instant Terminal Command (Recommended)
+------------------------------------------------
+1. Open Terminal (press ⌘ + Space, type "Terminal", press Return).
+2. Copy and paste this command and press Return:
+
    xattr -cr /Applications/Syntly.app
 
-======================================================
-Synt(ax)ly is 100% open source under the MIT License.
-GitHub: https://github.com/chayneps/syntly
-======================================================
+3. Double-click Syntly.app in your Applications folder. It will open
+   immediately with zero warnings!
+
+Why this works: Web browsers (Safari, Chrome) add a hidden "quarantine"
+attribute to downloaded files. The command above clears that tag so
+macOS treats Syntly as a trusted local app.
+
+
+METHOD 2: Unlock "Anywhere" in System Settings
+----------------------------------------------
+If you want your Mac to allow open-source apps without blocking:
+1. Open Terminal and run:
+
+   sudo spctl --master-disable
+
+2. Enter your Mac login password when prompted.
+3. Open System Settings -> Privacy & Security.
+4. Under "Security" -> "Allow applications from", select "Anywhere".
+5. Syntly.app will now open without any warnings.
+
+
+STEP 3: ACCESSIBILITY PERMISSION (REQUIRED FOR IN-CONTEXT ASSISTANCE)
+------------------------------------------------------------------------
+To let Synt(ax)ly detect your cursor and display suggestions as you type:
+1. Open System Settings -> Privacy & Security -> Accessibility.
+2. Toggle ON the switch next to "Synt(ax)ly" (or click "+" and select
+   /Applications/Syntly.app).
+
+========================================================================
+100% Free & Open Source under the MIT License
+Source Code & Releases: https://github.com/chayneps/syntly
+========================================================================
 EOF
 
 # 3. Create compressed DMG

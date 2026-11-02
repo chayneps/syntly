@@ -19,7 +19,7 @@
 
 ---
 
-## ⚡ Quick Download
+## ⚡ Quick Download & Installation
 
 Download the ready-to-run DMG installer for version **v1 (1.0.0)** directly from GitHub Releases:
 
@@ -27,13 +27,49 @@ Download the ready-to-run DMG installer for version **v1 (1.0.0)** directly from
 
 *Supports both Apple Silicon (M1/M2/M3/M4) and Intel Macs natively.*
 
-> [!TIP]
-> **First Launch on macOS (Apple Gatekeeper Notice)**:  
-> Because Synt(ax)ly is an open-source project without a paid Apple Developer certificate, macOS Gatekeeper may show: *"Apple could not verify Syntly.app is free of malware"*.  
-> 
-> To launch it on your Mac, use either method:  
-> • **Via System Settings**: Click **Done** on the alert, go to **System Settings → Privacy & Security**, scroll down to the **Security** section, and click **"Open Anyway"**.  
-> • **Via Terminal (Instant)**: Open Terminal and run `xattr -cr /Applications/Syntly.app`.
+---
+
+### 📥 Installation Steps
+
+1. Download and open **`Syntly-1.0.0-Universal.dmg`**.
+2. Drag **Syntly.app** into the **Applications** folder shortcut.
+
+---
+
+### 🔓 Overcoming the "Unknown Developer" / Gatekeeper Warning
+
+Because Synt(ax)ly is a free, independent open-source tool distributed outside the Mac App Store (without a paid $99/yr Apple Developer certificate), macOS Gatekeeper blocks it on the first launch with:
+
+> ⚠️ **"Syntly.app" Not Opened**  
+> *Apple could not verify "Syntly.app" is free of malware that may harm your Mac or compromise your privacy.*
+
+This happens because macOS is configured to allow only *"App Store & Known Developers"*. On modern macOS (Sonoma & Sequoia), clicking *"Open Anyway"* in System Settings often loops or fails to launch the app.
+
+Use either method below to open Syntly in seconds:
+
+#### Method 1: Instant Terminal Command (Recommended)
+Open **Terminal** and run:
+```bash
+xattr -cr /Applications/Syntly.app
+```
+> **Why this works**: Web browsers (Safari, Chrome) automatically attach a hidden `com.apple.quarantine` attribute to files downloaded from the internet. This command removes that tag, allowing macOS to treat Syntly as a trusted local application and launch immediately on double-click.
+
+#### Method 2: Unlock the "Anywhere" Option in System Settings
+To allow all open-source apps on your Mac without blocking:
+1. Open **Terminal** and run:
+   ```bash
+   sudo spctl --master-disable
+   ```
+2. Re-open **System Settings → Privacy & Security**.
+3. Under the **Security** section, the dropdown will now display **"Anywhere"**. Select it, and Syntly will launch without any Gatekeeper prompt.  
+*(To restore default settings later, run `sudo spctl --master-enable`).*
+
+---
+
+### 🛡️ Required Permission: Accessibility
+Synt(ax)ly needs macOS Accessibility permission to detect focused text fields and display the floating Manga Thinking Bubble as you type:
+1. Open **System Settings → Privacy & Security → Accessibility**.
+2. Toggle **ON** the switch next to **Synt(ax)ly** (or click `+` and choose `/Applications/Syntly.app`).
 
 ---
 
