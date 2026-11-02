@@ -225,6 +225,14 @@ public struct FloatingOverlayView: View {
 
             Spacer()
 
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.tertiary)
+                .padding(.top, 2)
+                .help("Drag header to move dialog • Double-click to reset position")
+
+            Spacer()
+
             if coordinator.issues.count > 1 && selectedTab == .suggestions {
                 Button("Accept All (\(coordinator.issues.count))") {
                     coordinator.acceptAllIssues()

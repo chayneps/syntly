@@ -473,44 +473,24 @@ struct InContextTypingScreenshotView: View {
                             .font(.system(size: 16))
                             .foregroundStyle(.primary)
 
-                        // Sentences with active inline corrections in red and green
-                        VStack(alignment: .leading, spacing: 14) {
-                            HStack(alignment: .center, spacing: 6) {
-                                Text("Due to the fact that")
-                                    .font(.system(size: 15))
-                                    .foregroundStyle(.primary)
-
-                                InlineCorrectionToken(wrong: "their going", fixed: "they're going")
-
-                                Text("to deploy tonight,")
-                                    .font(.system(size: 15))
-                                    .foregroundStyle(.primary)
-                            }
-
-                            HStack(alignment: .center, spacing: 6) {
-                                Text("we must verify that")
-                                    .font(.system(size: 15))
-                                    .foregroundStyle(.primary)
-
-                                InlineCorrectionToken(wrong: "all benchmarks is", fixed: "all benchmarks are")
-
-                                Text("verified.")
-                                    .font(.system(size: 15))
-                                    .foregroundStyle(.primary)
-                            }
-                        }
-
-                        // Next paragraph with blinking caret
-                        HStack(spacing: 3) {
-                            Text("Please let me know if you need additional help with the benchmarks")
-                                .font(.system(size: 15))
+                        // Natural typing in Apple Notes
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Due to the fact that their going to deploy tonight, we must ensure all benchmarks is verified before the team sync.")
+                                .font(.system(size: 16))
                                 .foregroundStyle(.primary)
+                                .lineSpacing(6)
 
-                            // Active typing cursor
-                            Rectangle()
-                                .fill(Color(red: 0.25, green: 0.55, blue: 1.0))
-                                .frame(width: 2.5, height: 18)
-                                .shadow(color: Color.blue.opacity(0.6), radius: 3)
+                            HStack(spacing: 3) {
+                                Text("Please let me know if you need additional help with the benchmarks")
+                                    .font(.system(size: 16))
+                                    .foregroundStyle(.primary)
+
+                                // Active typing cursor
+                                Rectangle()
+                                    .fill(Color(red: 0.25, green: 0.55, blue: 1.0))
+                                    .frame(width: 2.5, height: 18)
+                                    .shadow(color: Color.blue.opacity(0.6), radius: 3)
+                            }
                         }
 
                         Spacer()

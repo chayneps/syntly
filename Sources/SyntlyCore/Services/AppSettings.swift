@@ -92,6 +92,14 @@ public final class AppSettings: ObservableObject {
         }
     }
 
+    @Published public var appDialogOffsets: [String: AppPillOffset] {
+        didSet {
+            if let data = try? JSONEncoder().encode(appDialogOffsets) {
+                defaults.set(data, forKey: Keys.appDialogOffsets)
+            }
+        }
+    }
+
     // MARK: - Dock & Launch at Login Preferences
 
     @Published public var showDockIcon: Bool {
@@ -158,6 +166,7 @@ public final class AppSettings: ObservableObject {
         static let savedStyleRules = "syntly.savedStyleRules"
         static let pausedUntil = "syntly.pausedUntil"
         static let appPillOffsets = "syntly.appPillOffsets"
+        static let appDialogOffsets = "syntly.appDialogOffsets"
         static let cliProxyBaseURL = "syntly.cliProxyBaseURL"
         static let showDockIcon = "syntly.showDockIcon"
         static let launchAtLogin = "syntly.launchAtLogin"
@@ -250,6 +259,13 @@ public final class AppSettings: ObservableObject {
             self.appPillOffsets = decoded
         } else {
             self.appPillOffsets = [:]
+        }
+
+        if let data = defaults.data(forKey: Keys.appDialogOffsets),
+           let decoded = try? JSONDecoder().decode([String: AppPillOffset].self, from: data) {
+            self.appDialogOffsets = decoded
+        } else {
+            self.appDialogOffsets = [:]
         }
 
         if defaults.object(forKey: Keys.showDockIcon) == nil {
@@ -616,7 +632,7 @@ public final class AppSettings: ObservableObject {
         savedStyleRules.removeAll { $0.id == id }
     }
 
-    // MARK: - Per-App Pill Offset Management
+    // MARK: - Per-App Pill & Dialog Offset Management
 
     public func pillOffset(for bundleID: String?) -> AppPillOffset? {
         guard let id = bundleID, !id.isEmpty else { return nil }
@@ -633,7 +649,23 @@ public final class AppSettings: ObservableObject {
         appPillOffsets.removeValue(forKey: id)
     }
 
+    public func dialogOffset(for bundleID: String?) -> AppPillOffset? {
+        guard let id = bundleID, !id.isEmpty else { return nil }
+        return appDialogOffsets[id]
+    }
+
+    public func setDialogOffset(_ offset: AppPillOffset, for bundleID: String?) {
+        guard let id = bundleID, !id.isEmpty else { return }
+        appDialogOffsets[id] = offset
+    }
+
+    public func resetDialogOffset(for bundleID: String?) {
+        guard let id = bundleID, !id.isEmpty else { return }
+        appDialogOffsets.removeValue(forKey: id)
+    }
+
     public func resetAllPillOffsets() {
         appPillOffsets.removeAll()
+        appDialogOffsets.removeAll()
     }
 }

@@ -609,30 +609,11 @@ public final class AXEngine {
         return NSRange(location: cfRange.location, length: cfRange.length)
     }
 
-    /// Resolves the top-left corner of the focused text field (or caret bounds) in AppKit screen coordinates.
+    /// Resolves the caret bounds or top-left corner of the focused text field in AppKit screen coordinates.
     private func resolveAnchorAppKitPoint(for element: AXUIElement, selectedRange: NSRange?) -> CGPoint {
         let primaryScreenHeight = NSScreen.screens.first?.frame.height ?? NSScreen.main?.frame.height ?? 1080
 
-        // 1. Try element frame (top-left corner of the focused text box)
-        var posRef: CFTypeRef?
-        var sizeRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posRef) == .success,
-           AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success,
-           let pVal = posRef, let sVal = sizeRef {
-            var point = CGPoint.zero
-            var size = CGSize.zero
-            if AXValueGetValue(pVal as! AXValue, .cgPoint, &point),
-               AXValueGetValue(sVal as! AXValue, .cgSize, &size),
-               size.width > 20, size.height > 12 {
-                // In Quartz: (point.x, point.y) is top-left of element
-                // In AppKit (bottom-left origin): appKitTopY = primaryScreenHeight - point.y
-                let appKitTopY = primaryScreenHeight - point.y
-                let appKitLeftX = point.x
-                return CGPoint(x: max(20, appKitLeftX), y: max(40, appKitTopY))
-            }
-        }
-
-        // 2. Try caret / selection parameterized bounds (`kAXBoundsForRangeParameterizedAttribute`)
+        // 1. Try caret / selection parameterized bounds first (`kAXBoundsForRangeParameterizedAttribute`)
         if let sel = selectedRange {
             var cfRange = CFRange(location: sel.location, length: max(0, sel.length))
             if let rangeVal = AXValueCreate(.cfRange, &cfRange) {
@@ -646,12 +627,31 @@ public final class AXEngine {
                 if err == .success, let bVal = boundsRef {
                     var rect = CGRect.zero
                     if AXValueGetValue(bVal as! AXValue, .cgRect, &rect),
-                       rect.origin.x > 0 || rect.origin.y > 0 {
+                       rect.origin.x > 0 || rect.origin.y > 0,
+                       rect.size.height > 2 {
                         let appKitTopY = primaryScreenHeight - rect.minY
-                        let appKitLeftX = rect.minX - 44
+                        // Dock right beside the caret
+                        let appKitLeftX = rect.maxX + 12
                         return CGPoint(x: max(20, appKitLeftX), y: max(40, appKitTopY))
                     }
                 }
+            }
+        }
+
+        // 2. Fallback to Element Frame (positioned cleanly inside the editor, not spilling into adjacent sidebars)
+        var posRef: CFTypeRef?
+        var sizeRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posRef) == .success,
+           AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success,
+           let pVal = posRef, let sVal = sizeRef {
+            var point = CGPoint.zero
+            var size = CGSize.zero
+            if AXValueGetValue(pVal as! AXValue, .cgPoint, &point),
+               AXValueGetValue(sVal as! AXValue, .cgSize, &size),
+               size.width > 20, size.height > 12 {
+                let appKitTopY = primaryScreenHeight - point.y
+                let appKitLeftX = point.x + 20
+                return CGPoint(x: max(20, appKitLeftX), y: max(40, appKitTopY - 12))
             }
         }
 
