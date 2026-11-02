@@ -30,7 +30,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let isSandboxOnly = CommandLine.arguments.contains("--sandbox") || CommandLine.arguments.contains("--sandbox-only")
 
         if !isSandboxOnly {
-            floatingPanelController = FloatingPanelController(coordinator: coordinator)
+            floatingPanelController = FloatingPanelController(
+                coordinator: coordinator,
+                onOpenWritingPad: { [weak self] in
+                    self?.openWritingPadWindow()
+                },
+                onOpenSettings: { [weak self] in
+                    self?.openSettingsWindow()
+                }
+            )
             coordinator.start()
         } else {
             print("🛡️ Syntly running in SAFE SANDBOX MODE:")

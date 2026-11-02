@@ -571,6 +571,32 @@ public final class AppSettings: ObservableObject {
         }
     }
 
+    // MARK: - Global & Per-App Pause
+
+    @Published public var pausedAppsUntil: [String: Date] = [:]
+
+    public func pauseAppForOneHour(bundleID: String?) {
+        guard let id = bundleID, !id.isEmpty else { return }
+        pausedAppsUntil[id.lowercased()] = Date().addingTimeInterval(3600)
+    }
+
+    public func resumeApp(bundleID: String?) {
+        guard let id = bundleID, !id.isEmpty else { return }
+        pausedAppsUntil.removeValue(forKey: id.lowercased())
+    }
+
+    public func isAppPaused(bundleID: String?) -> Bool {
+        guard let id = bundleID?.lowercased(), !id.isEmpty, let until = pausedAppsUntil[id] else { return false }
+        if until > Date() {
+            return true
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.pausedAppsUntil.removeValue(forKey: id)
+            }
+            return false
+        }
+    }
+
     public func isCurrentlyPaused() -> Bool {
         guard let until = pausedUntil else { return false }
         if until > Date() {

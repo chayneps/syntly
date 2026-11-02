@@ -81,15 +81,15 @@ public struct FloatingOverlayView: View {
     private var tooltipText: String {
         switch coordinator.pillState {
         case .allClear:
-            return "Synt(ax)ly — All Clear • Drag to move • Click to open (⌘⇧G) • Double-click to reset"
+            return "Synt(ax)ly — All Clear • Drag to move • Click to open (⌘⇧G) • Right-click for options • Double-click to reset"
         case .checking:
-            return "Synt(ax)ly — Checking your writing… • Drag to move"
+            return "Synt(ax)ly — Checking your writing… • Drag to move • Right-click for options"
         case .issuesFound(let count, _):
-            return "Synt(ax)ly — \(count) fix\(count == 1 ? "" : "es") found • Quick-accept: ⌥Tab • Drag to move • Click to view (⌘⇧G)"
+            return "Synt(ax)ly — \(count) fix\(count == 1 ? "" : "es") found • Quick-accept: ⌥Tab • Drag to move • Click to view (⌘⇧G) • Right-click for options"
         case .paused:
-            return "Synt(ax)ly — Paused • Click to resume • Drag to move"
+            return "Synt(ax)ly — Paused • Click to resume • Right-click for options"
         case .error:
-            return "Synt(ax)ly — Connection issue • Click to inspect • Drag to move"
+            return "Synt(ax)ly — Connection issue • Click to inspect • Right-click for options"
         }
     }
 

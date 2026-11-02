@@ -16,6 +16,7 @@ public final class NonActivatingPanel: NSPanel {
     public var onDialogDragEnded: ((CGPoint) -> Void)?
     public var onPillSingleClick: (() -> Void)?
     public var onPanelDoubleClick: (() -> Void)?
+    public var onPillRightClick: ((NSEvent) -> Void)?
 
     private var initialMouseScreenLocation: CGPoint = .zero
     private var initialPanelOrigin: CGPoint = .zero
@@ -35,7 +36,27 @@ public final class NonActivatingPanel: NSPanel {
         let isExpanded = isPopoverExpanded()
 
         switch event.type {
+        case .rightMouseDown:
+            let localPoint = self.contentView?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
+            let inHeader = localPoint.y >= self.frame.height - 48
+            if !isExpanded || inHeader {
+                onPillRightClick?(event)
+                return
+            }
+            super.sendEvent(event)
+
         case .leftMouseDown:
+            let localPoint = self.contentView?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
+            let inHeader = localPoint.y >= self.frame.height - 48
+
+            // Treat Control + Left Click as Right Click (standard macOS behavior)
+            if event.modifierFlags.contains(.control) {
+                if !isExpanded || inHeader {
+                    onPillRightClick?(event)
+                    return
+                }
+            }
+
             if event.clickCount == 2 {
                 onPanelDoubleClick?()
                 return
@@ -48,8 +69,6 @@ public final class NonActivatingPanel: NSPanel {
 
             if isExpanded {
                 // When expanded: Allow dragging if click began in header bar (top 48pt) or footer bar (bottom 38pt)
-                let localPoint = self.contentView?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
-                let inHeader = localPoint.y >= self.frame.height - 48
                 let inFooter = localPoint.y <= 38
                 isDragCandidate = inHeader || inFooter
                 super.sendEvent(event)
@@ -119,12 +138,21 @@ public final class NonActivatingPanel: NSPanel {
 }
 
 @MainActor
-public final class FloatingPanelController {
+public final class FloatingPanelController: NSObject {
     private var panel: NonActivatingPanel?
     private let coordinator: WritingAssistantCoordinator
+    public var onOpenWritingPad: (() -> Void)?
+    public var onOpenSettings: (() -> Void)?
 
-    public init(coordinator: WritingAssistantCoordinator) {
+    public init(
+        coordinator: WritingAssistantCoordinator,
+        onOpenWritingPad: (() -> Void)? = nil,
+        onOpenSettings: (() -> Void)? = nil
+    ) {
         self.coordinator = coordinator
+        self.onOpenWritingPad = onOpenWritingPad
+        self.onOpenSettings = onOpenSettings
+        super.init()
 
         coordinator.onOverlayStateChanged = { [weak self] in
             self?.syncPanelVisibilityAndFrame()
@@ -154,6 +182,10 @@ public final class FloatingPanelController {
 
         newPanel.isPopoverExpanded = { [weak self] in
             self?.coordinator.isPopoverExpanded ?? false
+        }
+
+        newPanel.onPillRightClick = { [weak self] event in
+            self?.showPillContextMenu(with: event)
         }
 
         newPanel.onPillDragEnded = { [weak self] finalPanelOrigin in
@@ -216,8 +248,22 @@ public final class FloatingPanelController {
             return
         }
 
+        let appKey = context.bundleID ?? context.appName
+
         // Hide if app is blocked and user hasn't manually opened the popover
-        if coordinator.settings.isAppBlocked(bundleID: context.bundleID) && !coordinator.isPopoverExpanded {
+        if coordinator.settings.isAppBlocked(bundleID: appKey) && !coordinator.isPopoverExpanded {
+            panel.orderOut(nil)
+            return
+        }
+
+        // Hide if app is paused for 1 hr and user hasn't manually opened the popover
+        if coordinator.settings.isAppPaused(bundleID: appKey) && !coordinator.isPopoverExpanded {
+            panel.orderOut(nil)
+            return
+        }
+
+        // Hide if global pause is active and user hasn't manually opened the popover
+        if coordinator.settings.isCurrentlyPaused() && !coordinator.isPopoverExpanded {
             panel.orderOut(nil)
             return
         }
@@ -254,7 +300,6 @@ public final class FloatingPanelController {
         }
 
         // Check if the user has dragged and saved a custom relative offset for this app:
-        let appKey = context.bundleID ?? context.appName
         let customOffset = coordinator.settings.pillOffset(for: appKey)
 
         let pillOriginX: CGFloat
@@ -308,5 +353,182 @@ public final class FloatingPanelController {
         let newFrame = NSRect(origin: CGPoint(x: originX, y: originY), size: targetSize)
         panel.setFrame(newFrame, display: true, animate: false)
         panel.orderFrontRegardless()
+    }
+
+    // MARK: - Pill Context Menu (Right Click)
+
+    public func showPillContextMenu(with event: NSEvent) {
+        guard let panel = self.panel, let contentView = panel.contentView else { return }
+
+        let menu = NSMenu(title: "Synt(ax)ly")
+        menu.autoenablesItems = false
+
+        let appName = coordinator.currentContext?.appName ?? "Current App"
+        let appKey = coordinator.currentContext?.bundleID ?? coordinator.currentContext?.appName
+
+        if let appKey = appKey, !appKey.isEmpty {
+            let isPaused = coordinator.settings.isAppPaused(bundleID: appKey)
+            let isBlocked = coordinator.settings.isAppBlocked(bundleID: appKey)
+
+            if isPaused {
+                let resumeItem = NSMenuItem(
+                    title: "Resume in \(appName) (Paused 1 hr)",
+                    action: #selector(handleResumeApp(_:)),
+                    keyEquivalent: ""
+                )
+                resumeItem.target = self
+                resumeItem.image = NSImage(systemSymbolName: "play.circle", accessibilityDescription: nil)
+                menu.addItem(resumeItem)
+            } else if !isBlocked {
+                let pauseItem = NSMenuItem(
+                    title: "Disable in \(appName) for 1 Hour",
+                    action: #selector(handlePauseApp1Hr(_:)),
+                    keyEquivalent: ""
+                )
+                pauseItem.target = self
+                pauseItem.image = NSImage(systemSymbolName: "clock.badge.xmark", accessibilityDescription: nil)
+                menu.addItem(pauseItem)
+            }
+
+            let blockItem = NSMenuItem(
+                title: isBlocked ? "Enable in \(appName)" : "Disable in \(appName)",
+                action: isBlocked ? #selector(handleEnableApp(_:)) : #selector(handleDisableApp(_:)),
+                keyEquivalent: ""
+            )
+            blockItem.target = self
+            blockItem.image = NSImage(systemSymbolName: isBlocked ? "checkmark.circle" : "xmark.circle", accessibilityDescription: nil)
+            menu.addItem(blockItem)
+
+            menu.addItem(.separator())
+        }
+
+        // Global Pause / Resume
+        if coordinator.settings.isCurrentlyPaused() {
+            let resumeAllItem = NSMenuItem(
+                title: "Resume Synt(ax)ly Everywhere",
+                action: #selector(handleResumeGlobal(_:)),
+                keyEquivalent: ""
+            )
+            resumeAllItem.target = self
+            resumeAllItem.image = NSImage(systemSymbolName: "play.circle.fill", accessibilityDescription: nil)
+            menu.addItem(resumeAllItem)
+        } else {
+            let pauseAllItem = NSMenuItem(
+                title: "Pause Synt(ax)ly Everywhere for 1 Hour",
+                action: #selector(handlePauseGlobal1Hr(_:)),
+                keyEquivalent: ""
+            )
+            pauseAllItem.target = self
+            pauseAllItem.image = NSImage(systemSymbolName: "pause.circle", accessibilityDescription: nil)
+            menu.addItem(pauseAllItem)
+        }
+
+        menu.addItem(.separator())
+
+        let resetPosItem = NSMenuItem(
+            title: "Reset Pill Position for \(appName)",
+            action: #selector(handleResetPillPosition(_:)),
+            keyEquivalent: ""
+        )
+        resetPosItem.target = self
+        resetPosItem.image = NSImage(systemSymbolName: "arrow.counterclockwise", accessibilityDescription: nil)
+        menu.addItem(resetPosItem)
+
+        menu.addItem(.separator())
+
+        if onOpenWritingPad != nil {
+            let padItem = NSMenuItem(
+                title: "Open Writing Pad",
+                action: #selector(handleOpenWritingPad(_:)),
+                keyEquivalent: "n"
+            )
+            padItem.keyEquivalentModifierMask = [.command]
+            padItem.target = self
+            padItem.image = NSImage(systemSymbolName: "square.and.pencil", accessibilityDescription: nil)
+            menu.addItem(padItem)
+        }
+
+        if onOpenSettings != nil {
+            let settingsItem = NSMenuItem(
+                title: "Settings…",
+                action: #selector(handleOpenSettings(_:)),
+                keyEquivalent: ","
+            )
+            settingsItem.keyEquivalentModifierMask = [.command]
+            settingsItem.target = self
+            settingsItem.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
+            menu.addItem(settingsItem)
+        }
+
+        NSMenu.popUpContextMenu(menu, with: event, for: contentView)
+    }
+
+    @objc private func handlePauseApp1Hr(_ sender: Any?) {
+        guard let ctx = coordinator.currentContext else { return }
+        let appKey = ctx.bundleID ?? ctx.appName
+        coordinator.settings.pauseAppForOneHour(bundleID: appKey)
+        coordinator.isPopoverExpanded = false
+        coordinator.pillState = .paused(reason: "Paused in \(ctx.appName) (1 hr)")
+        syncPanelVisibilityAndFrame()
+        coordinator.onOverlayStateChanged?()
+    }
+
+    @objc private func handleResumeApp(_ sender: Any?) {
+        guard let ctx = coordinator.currentContext else { return }
+        let appKey = ctx.bundleID ?? ctx.appName
+        coordinator.settings.resumeApp(bundleID: appKey)
+        coordinator.pillState = .allClear
+        syncPanelVisibilityAndFrame()
+        coordinator.onOverlayStateChanged?()
+    }
+
+    @objc private func handleDisableApp(_ sender: Any?) {
+        guard let ctx = coordinator.currentContext else { return }
+        let appKey = ctx.bundleID ?? ctx.appName
+        coordinator.settings.toggleAppBlocked(bundleID: appKey)
+        coordinator.isPopoverExpanded = false
+        coordinator.pillState = .paused(reason: "Disabled in \(ctx.appName)")
+        syncPanelVisibilityAndFrame()
+        coordinator.onOverlayStateChanged?()
+    }
+
+    @objc private func handleEnableApp(_ sender: Any?) {
+        guard let ctx = coordinator.currentContext else { return }
+        let appKey = ctx.bundleID ?? ctx.appName
+        coordinator.settings.toggleAppBlocked(bundleID: appKey)
+        coordinator.pillState = .allClear
+        syncPanelVisibilityAndFrame()
+        coordinator.onOverlayStateChanged?()
+    }
+
+    @objc private func handlePauseGlobal1Hr(_ sender: Any?) {
+        coordinator.settings.pauseForOneHour()
+        coordinator.isPopoverExpanded = false
+        coordinator.pillState = .paused(reason: "Paused for 1 hour")
+        syncPanelVisibilityAndFrame()
+        coordinator.onOverlayStateChanged?()
+    }
+
+    @objc private func handleResumeGlobal(_ sender: Any?) {
+        coordinator.settings.resumeMonitoring()
+        coordinator.pillState = .allClear
+        syncPanelVisibilityAndFrame()
+        coordinator.onOverlayStateChanged?()
+    }
+
+    @objc private func handleResetPillPosition(_ sender: Any?) {
+        guard let ctx = coordinator.currentContext else { return }
+        let appKey = ctx.bundleID ?? ctx.appName
+        coordinator.settings.resetPillOffset(for: appKey)
+        coordinator.settings.resetDialogOffset(for: appKey)
+        syncPanelVisibilityAndFrame()
+    }
+
+    @objc private func handleOpenWritingPad(_ sender: Any?) {
+        onOpenWritingPad?()
+    }
+
+    @objc private func handleOpenSettings(_ sender: Any?) {
+        onOpenSettings?()
     }
 }

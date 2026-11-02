@@ -9,7 +9,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
     @Published public private(set) var isAccessibilityTrusted: Bool = AXIsProcessTrusted()
     @Published public private(set) var currentContext: FocusedTextContext?
     @Published public private(set) var issues: [WritingIssue] = []
-    @Published public private(set) var pillState: PillVisualState = .allClear
+    @Published public var pillState: PillVisualState = .allClear
     @Published public var isPopoverExpanded: Bool = false
     @Published public var isRewriteTabActive: Bool = false
     @Published public var isRewriting: Bool = false
@@ -156,7 +156,15 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             return
         }
 
-        if settings.isAppBlocked(bundleID: ctx.bundleID) {
+        let appKey = ctx.bundleID ?? ctx.appName
+
+        if settings.isAppPaused(bundleID: appKey) {
+            pillState = .paused(reason: "Paused in \(ctx.appName) (1 hr)")
+            onOverlayStateChanged?()
+            return
+        }
+
+        if settings.isAppBlocked(bundleID: appKey) {
             pillState = .paused(reason: "Disabled in \(ctx.appName)")
             onOverlayStateChanged?()
             return

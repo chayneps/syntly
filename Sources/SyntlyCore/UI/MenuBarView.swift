@@ -66,10 +66,26 @@ public struct MenuBarView: View {
                 }
             }
 
-            if let ctx = coordinator.currentContext, let bundleID = ctx.bundleID {
-                let isBlocked = settings.isAppBlocked(bundleID: bundleID)
+            if let ctx = coordinator.currentContext {
+                let appKey = ctx.bundleID ?? ctx.appName
+                let isPaused = settings.isAppPaused(bundleID: appKey)
+                let isBlocked = settings.isAppBlocked(bundleID: appKey)
+
+                if isPaused {
+                    Button("Resume in \(ctx.appName) (Paused 1 hr)") {
+                        settings.resumeApp(bundleID: appKey)
+                        coordinator.onOverlayStateChanged?()
+                    }
+                } else if !isBlocked {
+                    Button("Disable in \(ctx.appName) for 1 Hour") {
+                        settings.pauseAppForOneHour(bundleID: appKey)
+                        coordinator.onOverlayStateChanged?()
+                    }
+                }
+
                 Button(isBlocked ? "Enable in \(ctx.appName)" : "Disable in \(ctx.appName)") {
-                    settings.toggleAppBlocked(bundleID: bundleID)
+                    settings.toggleAppBlocked(bundleID: appKey)
+                    coordinator.onOverlayStateChanged?()
                 }
             }
 
