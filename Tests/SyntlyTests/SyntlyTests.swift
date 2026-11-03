@@ -327,6 +327,80 @@ final class SyntlyUnitTests: XCTestCase {
             XCTFail("Expected .completed state")
         }
     }
+
+    func testMacOSNLPEngineActiveWordCaretProtection() {
+        // User is actively typing "Let try" at the end of the line (caret is at UTF-16 index 7, right after 'y')
+        let inProgressText = "Let try"
+        let activeRange = MacOSNLPEngine.activeTypingWordRange(in: inProgressText, caretUTF16Location: 7)
+        XCTAssertEqual(activeRange, NSRange(location: 4, length: 3))
+
+        // Because caret is touching "try", "Let try" should NOT be flagged while the user is still typing "try..."
+        let midWordIssues = MacOSNLPEngine.analyzeLocally(text: inProgressText, caretUTF16Location: 7)
+        XCTAssertTrue(midWordIssues.isEmpty, "Must not flag an unfinished word/phrase while the caret is actively inside it")
+
+        // Once the user presses Space ("Let try "), caret is at 8 (after space), so "Let try" is flagged immediately
+        let completedWordText = "Let try "
+        let completedIssues = MacOSNLPEngine.analyzeLocally(text: completedWordText, caretUTF16Location: 8)
+        XCTAssertEqual(completedIssues.first?.original, "Let try")
+        XCTAssertEqual(completedIssues.first?.replacement, "Let's try")
+    }
+
+    func testMacOSNLPEngineDuplicateWordsArticlesAndBulletLetContractions() {
+        let sample = """
+        Summary of the the release:
+        • Let try an user onboarding flow
+        • Let also fix a apple icon and a hour timer
+        """
+        let issues = MacOSNLPEngine.analyzeLocally(text: sample, caretUTF16Location: nil)
+
+        XCTAssertTrue(issues.contains(where: { $0.original == "the the" && $0.replacement == "the" }))
+        XCTAssertTrue(issues.contains(where: { $0.original == "Let try" && $0.replacement == "Let's try" }))
+        XCTAssertTrue(issues.contains(where: { $0.original == "an user" && $0.replacement == "a user" }))
+        XCTAssertTrue(issues.contains(where: { $0.original == "Let also" && $0.replacement == "Let's also" }))
+        XCTAssertTrue(issues.contains(where: { $0.original == "a apple" && $0.replacement == "an apple" }))
+        XCTAssertTrue(issues.contains(where: { $0.original == "a hour" && $0.replacement == "an hour" }))
+    }
+
+    func testMacOSNLPEngineEntityAndTechnicalIdentifierImmunity() {
+        let text = "Ask @pumisake in #release-v2 about cliProxyAPI, JSON, user_id, and v1.0."
+        let nsText = text as NSString
+
+        let mentionRange = nsText.range(of: "pumisake")
+        XCTAssertTrue(MacOSNLPEngine.isImmuneToken("pumisake", at: mentionRange, in: text))
+
+        let camelRange = nsText.range(of: "cliProxyAPI")
+        XCTAssertTrue(MacOSNLPEngine.isImmuneToken("cliProxyAPI", at: camelRange, in: text))
+
+        let acronymRange = nsText.range(of: "JSON")
+        XCTAssertTrue(MacOSNLPEngine.isImmuneToken("JSON", at: acronymRange, in: text))
+
+        let snakeRange = nsText.range(of: "user_id")
+        XCTAssertTrue(MacOSNLPEngine.isImmuneToken("user_id", at: snakeRange, in: text))
+    }
+
+    func testSentenceSegmentationAndIncrementalSentenceCacheWhileTyping() {
+        let settings = AppSettings()
+        let service = GeminiService(settings: settings)
+        service.clearCache()
+
+        let initialText = "Update:\n• Let try this\n• Everything looks good"
+        let resolved = GeminiService.resolveIssues(
+            [ProofreadResult.RawIssue(original: "Let try", replacement: "Let's try", category: "correctness", explanation: "Use Let's.")],
+            in: initialText,
+            dictionary: []
+        )
+        service.storeCache(resolved, for: initialText)
+
+        // Now user inserts a prefix on line 1 ("Quick Update:\n") and starts typing a 3rd bullet
+        let updatedText = "Quick Update:\n• Let try this\n• Everything looks good\n• Typing more"
+        let incrementalIssues = service.cachedIssuesForUnchangedSentences(in: updatedText)
+
+        XCTAssertEqual(incrementalIssues.count, 1)
+        XCTAssertEqual(incrementalIssues[0].original, "Let try")
+        let nsUpdated = updatedText as NSString
+        let shiftedRange = NSRange(location: incrementalIssues[0].utf16Location!, length: incrementalIssues[0].utf16Length!)
+        XCTAssertEqual(nsUpdated.substring(with: shiftedRange), "Let try")
+    }
 }
 
 // MARK: - 2. End-to-End (E2E) Pipeline Tests

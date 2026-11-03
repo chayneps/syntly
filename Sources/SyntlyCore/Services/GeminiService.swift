@@ -75,11 +75,56 @@ public final class LLMService {
             customInstruction: settings.customStyleInstruction
         )
         cacheLock.lock()
-        defer { cacheLock.unlock() }
         if cache.count >= maxCacheEntries, let firstKey = cache.keys.first {
             cache.removeValue(forKey: firstKey)
         }
         cache[key] = issues
+
+        // Also index issues by individual sentence (`NLTokenizer`) for incremental Check-While-Typing reuse
+        let segments = MacOSNLPEngine.segmentSentences(in: text)
+        if segments.count > 1 {
+            for seg in segments {
+                let segIssues: [WritingIssue] = issues.compactMap { issue in
+                    guard let loc = issue.utf16Location,
+                          let len = issue.utf16Length,
+                          loc >= seg.utf16Range.location,
+                          loc + len <= seg.utf16Range.location + seg.utf16Range.length else {
+                        return nil
+                    }
+                    var localCopy = issue
+                    localCopy.utf16Location = loc - seg.utf16Range.location
+                    return localCopy
+                }
+                let segKey = Self.cacheKey(
+                    for: seg.text,
+                    dialect: settings.dialect,
+                    dictionary: settings.personalDictionary,
+                    customInstruction: settings.customStyleInstruction
+                )
+                cache[segKey] = segIssues
+            }
+        }
+        cacheLock.unlock()
+    }
+
+    /// Retrieves cached issues for any sentences in `text` that have already been analyzed,
+    /// shifting their `utf16Location` to match their current position in `text`.
+    public func cachedIssuesForUnchangedSentences(in text: String) -> [WritingIssue] {
+        let segments = MacOSNLPEngine.segmentSentences(in: text)
+        guard !segments.isEmpty else { return [] }
+
+        var collected: [WritingIssue] = []
+        for seg in segments {
+            if let segIssues = cachedIssues(for: seg.text) {
+                for var issue in segIssues {
+                    if let relLoc = issue.utf16Location {
+                        issue.utf16Location = seg.utf16Range.location + relLoc
+                    }
+                    collected.append(issue)
+                }
+            }
+        }
+        return collected
     }
 
     public func clearCache() {
@@ -88,63 +133,15 @@ public final class LLMService {
         cache.removeAll()
     }
 
-    // MARK: - Instant Local Spellcheck Pass (<5ms)
+    // MARK: - Instant Local macOS NLP & Spellcheck Pass (<3ms)
 
-    public func runLocalSpellcheck(on text: String) -> [WritingIssue] {
-        guard settings.enableLocalSpellcheck else { return [] }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count >= 3 else { return [] }
-
-        let checker = NSSpellChecker.shared
-        let nsString = text as NSString
-        var issues: [WritingIssue] = []
-        var searchOffset = 0
-
-        while searchOffset < nsString.length {
-            let misspelledRange = checker.checkSpelling(
-                of: text,
-                startingAt: searchOffset,
-                language: nil,
-                wrap: false,
-                inSpellDocumentWithTag: 0,
-                wordCount: nil
-            )
-
-            guard misspelledRange.location != NSNotFound, misspelledRange.length > 0 else {
-                break
-            }
-
-            let word = nsString.substring(with: misspelledRange)
-            searchOffset = misspelledRange.location + misspelledRange.length
-
-            // Skip words in personal dictionary
-            if settings.personalDictionary.contains(where: { $0.caseInsensitiveCompare(word) == .orderedSame }) {
-                continue
-            }
-
-            let guesses = checker.guesses(
-                forWordRange: misspelledRange,
-                in: text,
-                language: nil,
-                inSpellDocumentWithTag: 0
-            ) ?? []
-
-            if let topGuess = guesses.first, topGuess != word {
-                issues.append(
-                    WritingIssue(
-                        original: word,
-                        replacement: topGuess,
-                        category: .correctness,
-                        explanation: "Possible spelling mistake.",
-                        utf16Location: misspelledRange.location,
-                        utf16Length: misspelledRange.length,
-                        isLocalSpellcheck: true
-                    )
-                )
-            }
-        }
-
-        return issues
+    public func runLocalSpellcheck(on text: String, caretUTF16Location: Int? = nil) -> [WritingIssue] {
+        return MacOSNLPEngine.analyzeLocally(
+            text: text,
+            caretUTF16Location: caretUTF16Location,
+            dictionary: settings.personalDictionary,
+            enableSpellcheck: settings.enableLocalSpellcheck
+        )
     }
 
     // MARK: - Live Proofread (Structured JSON Issues)

@@ -155,6 +155,8 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         if previousApp != ctx.bundleID {
             dismissedOriginals.removeAll()
             rewrittenPreview = nil
+            issues = []
+            lastAnalyzedParagraph = ""
         }
 
         if settings.isCurrentlyPaused() {
@@ -202,13 +204,61 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             return
         }
 
-        // 1. Instant local spellcheck (<5ms)
-        let localIssues = geminiService.runLocalSpellcheck(on: paragraph)
+        // 1. Instant local macOS NaturalLanguage + NSSpellChecker pass (<3ms) with active-word caret protection
+        let localCaretOffset: Int? = {
+            guard let sel = ctx.selectedRange, sel.length == 0, sel.location >= baseOffset else { return nil }
+            return sel.location - baseOffset
+        }()
+
+        let localIssues = geminiService.runLocalSpellcheck(on: paragraph, caretUTF16Location: localCaretOffset)
             .filter { !dismissedOriginals.contains($0.original) }
             .map { Self.offsetIssue($0, by: baseOffset) }
-        if !localIssues.isEmpty && issues.isEmpty {
-            issues = localIssues
-            pillState = .issuesFound(count: localIssues.count, topCategory: .correctness)
+
+        // Keep still-valid issues from unchanged sentences alive with updated UTF-16 locations while typing
+        let activeWordInFullText = MacOSNLPEngine.activeTypingWordRange(
+            in: ctx.fullText,
+            caretUTF16Location: ctx.selectedRange?.length == 0 ? ctx.selectedRange?.location : nil
+        )
+        var provisionalIssues: [WritingIssue] = []
+
+        for var existing in issues where !dismissedOriginals.contains(existing.original) {
+            let liveRange = AXEngine.findBestOccurrenceRange(
+                of: existing.original,
+                preferredUTF16Location: existing.utf16Location,
+                in: ctx.fullText
+            )
+            if liveRange.location != NSNotFound {
+                if let active = activeWordInFullText, NSIntersectionRange(active, liveRange).length > 0 {
+                    continue
+                }
+                existing.utf16Location = liveRange.location
+                existing.utf16Length = liveRange.length
+                provisionalIssues.append(existing)
+            }
+        }
+
+        let sentenceCached = geminiService.cachedIssuesForUnchangedSentences(in: paragraph)
+            .filter { !dismissedOriginals.contains($0.original) }
+            .map { Self.offsetIssue($0, by: baseOffset) }
+
+        for candidate in (sentenceCached + localIssues) {
+            let candLoc = candidate.utf16Location ?? -1
+            let alreadyPresent = provisionalIssues.contains {
+                $0.original == candidate.original && abs(($0.utf16Location ?? -100) - candLoc) <= 2
+            }
+            if !alreadyPresent {
+                provisionalIssues.append(candidate)
+            }
+        }
+
+        provisionalIssues.sort { ($0.utf16Location ?? 0) < ($1.utf16Location ?? 0) }
+
+        if !provisionalIssues.isEmpty {
+            issues = provisionalIssues
+            pillState = .issuesFound(
+                count: provisionalIssues.count,
+                topCategory: provisionalIssues.first?.category ?? .correctness
+            )
         } else {
             pillState = .checking
         }
