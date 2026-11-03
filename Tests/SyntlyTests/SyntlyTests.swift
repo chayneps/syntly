@@ -378,6 +378,41 @@ final class SyntlyUnitTests: XCTestCase {
         XCTAssertTrue(MacOSNLPEngine.isImmuneToken("user_id", at: snakeRange, in: text))
     }
 
+    func testMacOSNLPEngineFusedWordsAndContractionTypos() {
+        let text = "We have alot of work and dont want to rush incase we cant finish."
+        let issues = MacOSNLPEngine.analyzeLocally(text: text, caretUTF16Location: nil)
+
+        XCTAssertTrue(issues.contains(where: { $0.original == "alot" && $0.replacement == "a lot" }))
+        XCTAssertTrue(issues.contains(where: { $0.original == "dont" && $0.replacement == "don't" }))
+        XCTAssertTrue(issues.contains(where: { $0.original == "incase" && $0.replacement == "in case" }))
+        XCTAssertTrue(issues.contains(where: { $0.original == "cant" && $0.replacement == "can't" }))
+    }
+
+    func testConvertDOMSelectionToAXValueOffsetInSlackBullets() {
+        let text = "Not sure what's going on here:\n• Let try this\n• Let also try his"
+        let ns = text as NSString
+
+        // Line 0: "Not sure what's going on here:\n" (31 chars)
+        // Line 1: "• Let try this\n" (15 chars in AX: 2 bullet units, 13 chars in DOM)
+        // Line 2: "• Let also try his" (18 chars in AX: 2 bullet units, 16 chars in DOM)
+
+        // Line 1: In DOM, marker is 1 unit at 31, "Let" starts at 32. In AX, "Let" is at 31 + 2 ("• ") = 33
+        let line1StartAX = AXEngine.convertDOMSelectionToAXValueOffset(domLocation: 32, in: text)
+        XCTAssertEqual(line1StartAX, 33)
+        XCTAssertEqual(ns.substring(with: NSRange(location: line1StartAX, length: 3)), "Let")
+
+        // Line 2: In DOM, line 1 is 14 chars (31 + 14 = 45). Line 2 marker is at 45, "Let" starts at 46.
+        // In AX: line 2 starts at 46, "Let" is at 46 + 2 ("• ") = 48!
+        let line2StartAX = AXEngine.convertDOMSelectionToAXValueOffset(domLocation: 46, in: text)
+        XCTAssertEqual(line2StartAX, 48)
+        XCTAssertEqual(ns.substring(with: NSRange(location: line2StartAX, length: 3)), "Let")
+
+        // Line 1 bullet-initial detection on text starting with "• Let try this"
+        let line1Only = "• Let try this"
+        let l1Issues = MacOSNLPEngine.analyzeLocally(text: line1Only, caretUTF16Location: nil)
+        XCTAssertTrue(l1Issues.contains(where: { $0.original == "Let try" && $0.replacement == "Let's try" }))
+    }
+
     func testSentenceSegmentationAndIncrementalSentenceCacheWhileTyping() {
         let settings = AppSettings()
         let service = GeminiService(settings: settings)

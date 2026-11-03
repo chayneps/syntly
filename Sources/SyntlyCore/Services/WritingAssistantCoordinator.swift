@@ -205,9 +205,18 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         }
 
         // 1. Instant local macOS NaturalLanguage + NSSpellChecker pass (<3ms) with active-word caret protection
+        let isChromium = AXEngine.isChromiumOrElectronApp(bundleID: ctx.bundleID, appName: ctx.appName)
+        let translatedCaretLocation: Int? = {
+            guard let sel = ctx.selectedRange, sel.length == 0 else { return nil }
+            if isChromium {
+                return AXEngine.convertDOMSelectionToAXValueOffset(domLocation: sel.location, in: ctx.fullText)
+            }
+            return sel.location
+        }()
+
         let localCaretOffset: Int? = {
-            guard let sel = ctx.selectedRange, sel.length == 0, sel.location >= baseOffset else { return nil }
-            return sel.location - baseOffset
+            guard let caret = translatedCaretLocation, caret >= baseOffset else { return nil }
+            return caret - baseOffset
         }()
 
         let localIssues = geminiService.runLocalSpellcheck(on: paragraph, caretUTF16Location: localCaretOffset)
@@ -217,7 +226,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         // Keep still-valid issues from unchanged sentences alive with updated UTF-16 locations while typing
         let activeWordInFullText = MacOSNLPEngine.activeTypingWordRange(
             in: ctx.fullText,
-            caretUTF16Location: ctx.selectedRange?.length == 0 ? ctx.selectedRange?.location : nil
+            caretUTF16Location: translatedCaretLocation
         )
         var provisionalIssues: [WritingIssue] = []
 
@@ -253,16 +262,27 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
 
         provisionalIssues.sort { ($0.utf16Location ?? 0) < ($1.utf16Location ?? 0) }
 
+        // Update internal issues array so ranges remain aligned while typing
         if !provisionalIssues.isEmpty {
-            issues = provisionalIssues
-            pillState = .issuesFound(
+            self.issues = provisionalIssues
+        }
+
+        // Keep UI calm: while typing with popover closed, show steady .checking indicator.
+        // If popover is expanded, reflect current provisional issue count.
+        let newPillState: PillVisualState
+        if isPopoverExpanded && !provisionalIssues.isEmpty {
+            newPillState = .issuesFound(
                 count: provisionalIssues.count,
                 topCategory: provisionalIssues.first?.category ?? .correctness
             )
         } else {
-            pillState = .checking
+            newPillState = .checking
         }
-        onOverlayStateChanged?()
+
+        if pillState != newPillState {
+            pillState = newPillState
+            onOverlayStateChanged?()
+        }
 
         // 2. Schedule debounced Gemini contextual check
         // Trigger faster (250ms) when user finishes a sentence with '.', '!', '?', or newline
@@ -372,6 +392,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         }
         issues = remaining
         updatePillStateFromIssues()
+        geminiService.clearCache()
 
         if issues.isEmpty && isPopoverExpanded {
             isPopoverExpanded = false
@@ -406,6 +427,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
 
         _ = axEngine.replaceSelectedOrFullText(with: workingText)
 
+        geminiService.clearCache()
         onAllIssuesAccepted?(accepted, workingText)
 
         if let current = currentContext {

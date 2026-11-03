@@ -166,6 +166,33 @@ public enum MacOSNLPEngine {
         "talk", "meet", "find", "keep", "move", "work", "wait", "think"
     ]
 
+    private static let commonFusedWords: [String: String] = [
+        "alot": "a lot",
+        "incase": "in case",
+        "atleast": "at least",
+        "infront": "in front",
+        "aswell": "as well",
+        "eachother": "each other",
+        "everytime": "every time"
+    ]
+
+    private static let commonContractionTypos: [String: String] = [
+        "dont": "don't",
+        "cant": "can't",
+        "wont": "won't",
+        "didnt": "didn't",
+        "couldnt": "couldn't",
+        "wouldnt": "wouldn't",
+        "shouldnt": "shouldn't",
+        "doesnt": "doesn't",
+        "isnt": "isn't",
+        "arent": "aren't",
+        "hasnt": "hasn't",
+        "havent": "haven't",
+        "wasnt": "wasn't",
+        "werent": "weren't"
+    ]
+
     /// Runs a fast, 100% on-device pass combining:
     /// 1. Duplicate consecutive word detection (`"the the"` -> `"the"`)
     /// 2. Indefinite article `a` / `an` phonological validation (`"an typo"` -> `"a typo"`, `"a apple"` -> `"an apple"`)
@@ -269,7 +296,7 @@ public enum MacOSNLPEngine {
         }
 
         // Pass 3: Sentence or bullet-initial "Let <bare-verb/also>" -> "Let's <bare-verb/also>"
-        if let letRegex = try? NSRegularExpression(pattern: #"(?:^|\n\s*(?:[•◦▪▫▸‣⁃\-\*\+]|\d+[\.\)])?\s*)(Let)[ \t]+([a-z]{2,})\b"#, options: []) {
+        if let letRegex = try? NSRegularExpression(pattern: #"(?:^|\n)\s*(?:[•◦▪▫▸‣⁃\-\*\+]|\d+[\.\)])?\s*(Let)[ \t]+([a-z]{2,})\b"#, options: []) {
             let matches = letRegex.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length))
             for match in matches {
                 let letRange = match.range(at: 1)
@@ -301,7 +328,54 @@ public enum MacOSNLPEngine {
             }
         }
 
-        // Pass 4: NSSpellChecker with contextual correction, entity immunity, and active-caret protection
+        // Pass 4: High-frequency fused-word and contraction typos (e.g., "alot" -> "a lot", "dont" -> "don't")
+        let wordTokenizer = NLTokenizer(unit: .word)
+        wordTokenizer.string = text
+        wordTokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { tokenRange, _ in
+            let wordRange = NSRange(tokenRange, in: text)
+            guard !overlapsActiveCaretOrExisting(wordRange) else { return true }
+            let word = nsText.substring(with: wordRange)
+            let lower = word.lowercased()
+
+            if isImmuneToken(word, at: wordRange, in: text) || dictionary.contains(where: { $0.caseInsensitiveCompare(word) == .orderedSame }) {
+                return true
+            }
+
+            if let repl = commonFusedWords[lower] {
+                let isCap = word.first?.isUppercase == true
+                let formattedRepl = isCap ? (repl.prefix(1).uppercased() + repl.dropFirst()) : repl
+                issues.append(
+                    WritingIssue(
+                        original: word,
+                        replacement: formattedRepl,
+                        category: .correctness,
+                        explanation: "Split into two words: '\(formattedRepl)'.",
+                        utf16Location: wordRange.location,
+                        utf16Length: wordRange.length,
+                        isLocalSpellcheck: true
+                    )
+                )
+                coveredRanges.append(wordRange)
+            } else if let repl = commonContractionTypos[lower] {
+                let isCap = word.first?.isUppercase == true
+                let formattedRepl = isCap ? (repl.prefix(1).uppercased() + repl.dropFirst()) : repl
+                issues.append(
+                    WritingIssue(
+                        original: word,
+                        replacement: formattedRepl,
+                        category: .correctness,
+                        explanation: "Add missing apostrophe: '\(formattedRepl)'.",
+                        utf16Location: wordRange.location,
+                        utf16Length: wordRange.length,
+                        isLocalSpellcheck: true
+                    )
+                )
+                coveredRanges.append(wordRange)
+            }
+            return true
+        }
+
+        // Pass 5: NSSpellChecker with contextual correction, entity immunity, and active-caret protection
         let checker = NSSpellChecker.shared
         var searchOffset = 0
 

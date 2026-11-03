@@ -582,6 +582,71 @@ public final class AXEngine {
         return candidates
     }
 
+    /// Translates a DOM selection UTF-16 offset (from `kAXSelectedTextRangeAttribute` in Chromium/Electron/Slack)
+    /// into the corresponding UTF-16 offset in `kAXValueAttribute` (which contains rich-text list markers like `"• "` or `"1. "`).
+    public static func convertDOMSelectionToAXValueOffset(domLocation: Int, in fullText: String) -> Int {
+        let nsText = fullText as NSString
+        guard domLocation > 0, nsText.length > 0 else { return 0 }
+
+        let bulletChars = CharacterSet(charactersIn: "•◦▪▫▸‣⁃-*+☐☑✓✔")
+        var currentDOM = 0
+        var lineStartAX = 0
+
+        while lineStartAX < nsText.length {
+            let lineRange = nsText.lineRange(for: NSRange(location: lineStartAX, length: 0))
+            let line = nsText.substring(with: lineRange)
+            let nsLine = line as NSString
+
+            var markerLenAX = 0
+            var markerLenDOM = 0
+
+            var idx = 0
+            while idx < nsLine.length {
+                let ch = nsLine.character(at: idx)
+                if ch == 0x20 || ch == 0x09 || ch == 0x00A0 { idx += 1 } else { break }
+            }
+
+            if idx < nsLine.length, let scalar = UnicodeScalar(nsLine.character(at: idx)), bulletChars.contains(scalar) {
+                var after = idx + 1
+                while after < nsLine.length {
+                    let ch = nsLine.character(at: after)
+                    if ch == 0x20 || ch == 0x09 || ch == 0x00A0 { after += 1 } else { break }
+                }
+                markerLenAX = after
+                markerLenDOM = 1 // In Slack/Chromium DOM selection space, bullet markers occupy 1 unit
+            } else if idx < nsLine.length {
+                var numEnd = idx
+                while numEnd < nsLine.length {
+                    let ch = nsLine.character(at: numEnd)
+                    if ch >= 0x30 && ch <= 0x39 { numEnd += 1 } else { break }
+                }
+                if numEnd > idx && numEnd + 1 < nsLine.length {
+                    let punct = nsLine.character(at: numEnd)
+                    let sp = nsLine.character(at: numEnd + 1)
+                    if (punct == 0x2E || punct == 0x29) && (sp == 0x20 || sp == 0x09 || sp == 0x00A0) {
+                        markerLenAX = numEnd + 2
+                        markerLenDOM = 1
+                    }
+                }
+            }
+
+            let contentLenAX = nsLine.length - markerLenAX
+            let lineLenDOM = markerLenDOM + contentLenAX
+
+            if currentDOM + lineLenDOM > domLocation || lineRange.location + lineRange.length >= nsText.length {
+                let offsetInDOM = max(0, domLocation - currentDOM)
+                let offsetInAX = markerLenAX + max(0, offsetInDOM - markerLenDOM)
+                return min(lineRange.location + offsetInAX, nsText.length)
+            }
+
+            currentDOM += lineLenDOM
+            let nextStart = lineRange.location + lineRange.length
+            if nextStart <= lineStartAX { break }
+            lineStartAX = nextStart
+        }
+        return min(domLocation, nsText.length)
+    }
+
     /// Computes the exact UTF-16 offset adjustment between `expected` and `actualAtRange`
     /// when `kAXSelectedTextAttribute` is shifted left or right due to rich-text / DOM markers.
     public static func computeRangeOffsetCorrection(expected: String, actualAtRange: String) -> Int? {
@@ -986,20 +1051,27 @@ public final class AXEngine {
         return targetApp
     }
 
-    private func isChromiumOrElectronApp(_ targetApp: NSRunningApplication?, element: AXUIElement) -> Bool {
-        if let accessorResult = elementAccessor?.isChromiumOrElectron(element) {
-            return accessorResult
-        }
-
-        let app = targetApp ?? NSWorkspace.shared.frontmostApplication
-        let bid = (app?.bundleIdentifier ?? "").lowercased()
-        let name = (app?.localizedName ?? "").lowercased()
+    public static func isChromiumOrElectronApp(bundleID: String?, appName: String? = nil) -> Bool {
+        let bid = (bundleID ?? "").lowercased()
+        let name = (appName ?? "").lowercased()
 
         if bid.contains("chrome") || bid.contains("antigravity") || bid.contains("electron") ||
            bid.contains("slack") || bid.contains("vscode") || bid.contains("code") ||
            bid.contains("brave") || bid.contains("edge") || bid.contains("discord") ||
            bid.contains("notion") || bid.contains("cursor") ||
            name.contains("chrome") || name.contains("antigravity") {
+            return true
+        }
+        return false
+    }
+
+    private func isChromiumOrElectronApp(_ targetApp: NSRunningApplication?, element: AXUIElement) -> Bool {
+        if let accessorResult = elementAccessor?.isChromiumOrElectron(element) {
+            return accessorResult
+        }
+
+        let app = targetApp ?? NSWorkspace.shared.frontmostApplication
+        if Self.isChromiumOrElectronApp(bundleID: app?.bundleIdentifier, appName: app?.localizedName) {
             return true
         }
 
