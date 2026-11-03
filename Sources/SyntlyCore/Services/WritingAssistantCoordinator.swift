@@ -135,8 +135,14 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
     }
 
     nonisolated public func axEngineDidUpdateContext(_ context: FocusedTextContext?) {
-        Task { @MainActor in
-            self.handleUpdatedContext(context)
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                self.handleUpdatedContext(context)
+            }
+        } else {
+            Task { @MainActor in
+                self.handleUpdatedContext(context)
+            }
         }
     }
 
@@ -250,10 +256,21 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             .filter { !dismissedOriginals.contains($0.original) }
             .map { Self.offsetIssue($0, by: baseOffset) }
 
-        for candidate in (sentenceCached + localIssues) {
-            let candLoc = candidate.utf16Location ?? -1
+        for var candidate in (sentenceCached + localIssues) {
+            let liveRange = AXEngine.findBestOccurrenceRange(
+                of: candidate.original,
+                preferredUTF16Location: candidate.utf16Location,
+                in: ctx.fullText
+            )
+            guard liveRange.location != NSNotFound else { continue }
+            if let active = activeWordInFullText, NSIntersectionRange(active, liveRange).length > 0 {
+                continue
+            }
+            candidate.utf16Location = liveRange.location
+            candidate.utf16Length = liveRange.length
+
             let alreadyPresent = provisionalIssues.contains {
-                $0.original == candidate.original && abs(($0.utf16Location ?? -100) - candLoc) <= 2
+                $0.original == candidate.original && abs(($0.utf16Location ?? -100) - liveRange.location) <= 2
             }
             if !alreadyPresent {
                 provisionalIssues.append(candidate)
@@ -262,15 +279,12 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
 
         provisionalIssues.sort { ($0.utf16Location ?? 0) < ($1.utf16Location ?? 0) }
 
-        // Update internal issues array so ranges remain aligned while typing
-        if !provisionalIssues.isEmpty {
-            self.issues = provisionalIssues
-        }
+        // Always update internal issues array so invalidated partial/stale issues are immediately removed
+        self.issues = provisionalIssues
 
-        // Keep UI calm: while typing with popover closed, show steady .checking indicator.
-        // If popover is expanded, reflect current provisional issue count.
+        // Surface instant local NLP & spellcheck issues immediately on the pill
         let newPillState: PillVisualState
-        if isPopoverExpanded && !provisionalIssues.isEmpty {
+        if !provisionalIssues.isEmpty {
             newPillState = .issuesFound(
                 count: provisionalIssues.count,
                 topCategory: provisionalIssues.first?.category ?? .correctness
@@ -328,6 +342,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
                     combined.append(local)
                 }
             }
+            combined.sort { ($0.utf16Location ?? 0) < ($1.utf16Location ?? 0) }
 
             self.issues = combined
             if let first = combined.first {

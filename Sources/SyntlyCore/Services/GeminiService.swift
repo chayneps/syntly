@@ -80,10 +80,14 @@ public final class LLMService {
         }
         cache[key] = issues
 
-        // Also index issues by individual sentence (`NLTokenizer`) for incremental Check-While-Typing reuse
+        // Also index issues by completed sentence (`NLTokenizer`) for incremental Check-While-Typing reuse
         let segments = MacOSNLPEngine.segmentSentences(in: text)
         if segments.count > 1 {
             for seg in segments {
+                let trimmedSeg = seg.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let isCompletedSentence = trimmedSeg.hasSuffix(".") || trimmedSeg.hasSuffix("!") || trimmedSeg.hasSuffix("?") || seg.text.hasSuffix("\n")
+                guard isCompletedSentence else { continue }
+
                 let segIssues: [WritingIssue] = issues.compactMap { issue in
                     guard let loc = issue.utf16Location,
                           let len = issue.utf16Length,
@@ -462,36 +466,21 @@ public final class LLMService {
 
             let category = IssueCategory(rawValue: raw.category.lowercased()) ?? .correctness
 
-            // Find occurrence in sourceText, preferring whole-word boundary matches first
+            // Find occurrence in sourceText, strictly requiring whole-word boundaries
             var searchRange = NSRange(location: 0, length: normNsText.length)
             var matchedRange: NSRange?
-            var fallbackPartialRange: NSRange?
 
             while searchRange.location < normNsText.length {
                 let found = normNsText.range(of: normOrig, options: [], range: searchRange)
                 guard found.location != NSNotFound else { break }
-                if !usedLocations.contains(found.location) {
-                    if AXEngine.isWholeWordMatch(range: found, of: normOrig, in: normNsText) {
-                        matchedRange = found
-                        usedLocations.insert(found.location)
-                        break
-                    } else if fallbackPartialRange == nil {
-                        fallbackPartialRange = found
-                    }
+                if !usedLocations.contains(found.location),
+                   AXEngine.isWholeWordMatch(range: found, of: normOrig, in: normNsText) {
+                    matchedRange = found
+                    usedLocations.insert(found.location)
+                    break
                 }
                 let nextLoc = found.location + max(1, found.length)
                 searchRange = NSRange(location: nextLoc, length: normNsText.length - nextLoc)
-            }
-
-            if matchedRange == nil, let partial = fallbackPartialRange {
-                let alphanumerics = CharacterSet.alphanumerics
-                let nsOrig = normOrig as NSString
-                let startsWithWordChar = UnicodeScalar(nsOrig.character(at: 0)).map { alphanumerics.contains($0) } ?? false
-                let endsWithWordChar = UnicodeScalar(nsOrig.character(at: nsOrig.length - 1)).map { alphanumerics.contains($0) } ?? false
-                if !startsWithWordChar || !endsWithWordChar {
-                    matchedRange = partial
-                    usedLocations.insert(partial.location)
-                }
             }
 
             if let range = matchedRange {

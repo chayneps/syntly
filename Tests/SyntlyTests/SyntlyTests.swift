@@ -1216,6 +1216,95 @@ final class SyntlyEndToEndTests: XCTestCase {
             "Summary:\n• Delayed because traffic is heavy\n• Let's also fix the deployment"
         )
     }
+
+    func testPlainTextChromiumReplacementNeverShiftsOrKeepsStalePartialWords() async throws {
+        // 1. User pauses mid-word at "As I think it not deali"
+        let partialText = "I don't know what's going on but I think this is too slow to work properly. As I think it not deali"
+        let mockElectron = SimulatedSlackBulletAXAccessor(axValueText: partialText)
+        axEngine.elementAccessor = mockElectron
+        axEngine.setTestingFocusedElement(AXUIElementCreateSystemWide())
+
+        MockGeminiURLProtocol.requestHandler = { request in
+            let response = """
+            {
+              "choices": [
+                {
+                  "message": {
+                    "content": "{\\"issues\\": [{\\"original\\": \\"it not deali\\", \\"replacement\\": \\"it's not dealing\\", \\"category\\": \\"correctness\\", \\"explanation\\": \\"Grammar\\"}]}"
+                  }
+                }
+              ]
+            }
+            """
+            let httpResponse = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            return (httpResponse, Data(response.utf8))
+        }
+
+        coordinator.axEngineDidUpdateContext(
+            FocusedTextContext(
+                appName: "Antigravity",
+                bundleID: "com.google.antigravity",
+                pid: 9999,
+                fullText: partialText,
+                selectedRange: NSRange(location: (partialText as NSString).length, length: 0)
+            )
+        )
+        try await Task.sleep(nanoseconds: 220_000_000)
+        XCTAssertEqual(coordinator.issues.count, 1)
+        XCTAssertEqual(coordinator.issues.first?.original, "it not deali")
+
+        // 2. User continues typing "ng with punctuation mark." — stale partial issue "it not deali" must be immediately cleared!
+        let fullSentence = "I don't know what's going on but I think this is too slow to work properly. As I think it not dealing with punctuation mark."
+        mockElectron.axValueText = fullSentence
+        // Simulate delayed/empty kAXSelectedTextAttribute in Electron during window activation
+        mockElectron.forceUnrelatedSelectedText = ""
+
+        MockGeminiURLProtocol.requestHandler = { request in
+            let response = """
+            {
+              "choices": [
+                {
+                  "message": {
+                    "content": "{\\"issues\\": [{\\"original\\": \\"it not dealing\\", \\"replacement\\": \\"it's not dealing\\", \\"category\\": \\"correctness\\", \\"explanation\\": \\"Grammar\\"}]}"
+                  }
+                }
+              ]
+            }
+            """
+            let httpResponse = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            return (httpResponse, Data(response.utf8))
+        }
+
+        coordinator.axEngineDidUpdateContext(
+            FocusedTextContext(
+                appName: "Antigravity",
+                bundleID: "com.google.antigravity",
+                pid: 9999,
+                fullText: fullSentence,
+                selectedRange: NSRange(location: (fullSentence as NSString).length, length: 0)
+            )
+        )
+        // Immediately on keystroke (before network finishes), stale "it not deali" must be removed from coordinator.issues
+        XCTAssertTrue(coordinator.issues.isEmpty, "Stale partial issue 'it not deali' must be cleared immediately when user types 'ng'")
+
+        // 3. Wait for debounced proofread of full sentence and accept "it not dealing" -> "it's not dealing"
+        try await Task.sleep(nanoseconds: 220_000_000)
+        XCTAssertEqual(coordinator.issues.count, 1)
+        XCTAssertEqual(coordinator.issues.first?.original, "it not dealing")
+        XCTAssertEqual(coordinator.issues.first?.utf16Location, 87)
+        XCTAssertEqual(coordinator.issues.first?.utf16Length, 14)
+
+        mockElectron.setRangeCallCount = 0
+        coordinator.acceptIssue(coordinator.issues[0])
+
+        // Plain-text fast path must set range exactly ONCE at (87, 14) without running spiral search or shifting to 85
+        XCTAssertEqual(mockElectron.setRangeCallCount, 1)
+        XCTAssertEqual(mockElectron.selectedRangeInDOM, NSRange(location: 87, length: 14))
+        XCTAssertEqual(
+            mockElectron.axValueText,
+            "I don't know what's going on but I think this is too slow to work properly. As I think it's not dealing with punctuation mark."
+        )
+    }
 }
 
 // MARK: - Simulated Slack / Chromium Rich-Text List AXUIElement Accessor
@@ -1229,6 +1318,7 @@ final class SimulatedSlackBulletAXAccessor: AXElementAccessing {
     var selectedRangeInDOM: NSRange = NSRange(location: 0, length: 0)
     var collapseCRLFInDOM: Bool
     var forceUnrelatedSelectedText: String?
+    var setRangeCallCount: Int = 0
 
     init(axValueText: String, collapseCRLFInDOM: Bool = false) {
         self.axValueText = axValueText
@@ -1304,6 +1394,7 @@ final class SimulatedSlackBulletAXAccessor: AXElementAccessing {
 
     func setRange(_ element: AXUIElement, attribute: String, range: NSRange) -> AXError {
         if attribute == (kAXSelectedTextRangeAttribute as String) {
+            setRangeCallCount += 1
             let nsDOM = domSelectionText as NSString
             let clampedLoc = max(0, min(range.location, nsDOM.length))
             let clampedLen = max(0, min(range.length, nsDOM.length - clampedLoc))
