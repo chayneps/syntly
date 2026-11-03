@@ -21,7 +21,7 @@
 
 ## ⚡ Quick Download & Installation
 
-Download the ready-to-run DMG installer for version **v1 (1.0.0)** directly from GitHub Releases:
+Download the ready-to-run DMG installer for version **v1 (1.0.1)** directly from GitHub Releases:
 
 👉 **[Download Syntly v1 DMG (Universal 2)](https://github.com/chayneps/syntly/releases/latest)**
 
@@ -31,7 +31,7 @@ Download the ready-to-run DMG installer for version **v1 (1.0.0)** directly from
 
 ### 📥 Installation Steps
 
-1. Download and open **`Syntly-1.0.0-Universal.dmg`**.
+1. Download and open **`Syntly-1.0.1-Universal.dmg`**.
 2. Drag **Syntly.app** into the **Applications** folder shortcut.
 
 ---
@@ -193,7 +193,7 @@ open Syntly.app
 chmod +x scripts/build-dmg.sh
 ./scripts/build-dmg.sh
 ```
-*Creates a compressed `Syntly-1.0.0-Universal.dmg` containing the native Universal 2 (`arm64` + `x86_64`) binary and drag-and-drop `/Applications` folder shortcut.*
+*Creates a compressed `Syntly-1.0.1-Universal.dmg` containing the native Universal 2 (`arm64` + `x86_64`) binary and drag-and-drop `/Applications` folder shortcut.*
 
 ---
 

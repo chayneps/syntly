@@ -427,6 +427,8 @@ struct IssueCardRow: View {
     let onAccept: () -> Void
     let onDismiss: () -> Void
     let onAddToDictionary: () -> Void
+    var acceptHelpText: String = "Accept will replace in original text"
+    var showsTargetHint: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -452,6 +454,7 @@ struct IssueCardRow: View {
                 .buttonStyle(.borderedProminent)
                 .tint(issue.category.badgeColor)
                 .controlSize(.mini)
+                .help(acceptHelpText)
 
                 Button {
                     onAddToDictionary()
@@ -492,6 +495,16 @@ struct IssueCardRow: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if showsTargetHint {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.turn.down.left")
+                        .font(.system(size: 9))
+                    Text("Accept will change on original")
+                        .font(.system(size: 9.5, weight: .medium))
+                }
+                .foregroundStyle(.secondary.opacity(0.85))
+            }
         }
         .padding(9)
         .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))

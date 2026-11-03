@@ -16,7 +16,7 @@ public struct AboutView: View {
                 Text("Synt(ax)ly")
                     .font(.title2.bold())
 
-                Text("Version 1.0.0 (v1)")
+                Text("Version 1.0.1 (v1.0.1)")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
