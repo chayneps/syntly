@@ -542,116 +542,25 @@ public struct WritingPadView: View {
     // MARK: - Editor Column (Left)
 
     private var editorColumn: some View {
-        VStack(spacing: 0) {
-            VStack(spacing: 0) {
-                // Pending Rewrite Preview Card (If generated)
-                if let rewrite = pendingRewriteText {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(alignment: .center) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "sparkles")
-                                    .foregroundStyle(.pink)
-                                    .font(.caption)
-                                let modifiersTitle: String = {
-                                    if pendingRewriteModifiers.isEmpty {
-                                        return "Custom Style"
-                                    } else {
-                                        return RewriteModifier.allCases
-                                            .filter { pendingRewriteModifiers.contains($0) }
-                                            .map(\.title)
-                                            .joined(separator: " + ")
-                                    }
-                                }()
-                                Text("AI Rewrite (\(modifiersTitle)) Result:")
-                                    .font(.subheadline.bold())
-                                    .foregroundStyle(.primary)
-                            }
-                            Spacer()
-                            Button {
-                                withAnimation {
-                                    pendingRewriteText = nil
-                                }
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                            .help("Dismiss preview")
-                        }
-
-                        ScrollView {
-                            Text(rewrite)
-                                .font(.system(size: 14))
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(10)
-                        }
-                        .frame(maxHeight: 140)
-                        .background(Color(NSColor.textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .strokeBorder(Color.pink.opacity(0.3), lineWidth: 1)
-                        )
-
-                        HStack(spacing: 8) {
-                            Button {
-                                lastRevertedText = padText
-                                padText = rewrite
-                                withAnimation {
-                                    pendingRewriteText = nil
-                                }
-                                schedulePadCheck(for: rewrite)
-                            } label: {
-                                Label("Take Rewrite (Replace Original)", systemImage: "checkmark.circle.fill")
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.regular)
-
-                            Button {
-                                lastRevertedText = padText
-                                padText = padText.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + rewrite
-                                withAnimation {
-                                    pendingRewriteText = nil
-                                }
-                                schedulePadCheck(for: padText)
-                            } label: {
-                                Label("Insert Below Original", systemImage: "text.append")
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.regular)
-
-                            Button {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(rewrite, forType: .string)
-                                copiedRewriteNotification = true
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                                    copiedRewriteNotification = false
-                                }
-                            } label: {
-                                Label(copiedRewriteNotification ? "Copied!" : "Copy", systemImage: copiedRewriteNotification ? "checkmark" : "doc.on.doc")
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.regular)
-
-                            Spacer()
-
-                            Button("Discard") {
-                                withAnimation {
-                                    pendingRewriteText = nil
-                                }
-                            }
-                            .buttonStyle(.plain)
+        VStack(spacing: 12) {
+            // Top Section: Original Document Editor
+            VStack(alignment: .leading, spacing: 0) {
+                // Header showing "Original Document" if rewrite preview is open
+                if pendingRewriteText != nil {
+                    HStack(spacing: 6) {
+                        Image(systemName: "doc.text")
+                            .font(.caption)
                             .foregroundStyle(.secondary)
-                        }
+                        Text("Original Document")
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                        Spacer()
                     }
-                    .padding(12)
-                    .background(Color.pink.opacity(0.06))
-                    .overlay(
-                        Rectangle()
-                            .frame(height: 1)
-                            .foregroundColor(Color.pink.opacity(0.2)),
-                        alignment: .bottom
-                    )
+                    .padding(.horizontal, 14)
+                    .padding(.top, 10)
+                    .padding(.bottom, 6)
+
+                    Divider()
                 }
 
                 // Undo banner if text was replaced/inserted
@@ -683,6 +592,8 @@ public struct WritingPadView: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                     .background(Color.blue.opacity(0.08))
+
+                    Divider()
                 }
 
                 // Main Text Editor Canvas
@@ -707,14 +618,123 @@ public struct WritingPadView: View {
                             schedulePadCheck(for: newValue)
                         }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .background(Color(NSColor.textBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
                     .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
             )
-            .padding(16)
+
+            // Bottom Section: AI Rewrite Result Preview Card (Positioned UNDER Original Text)
+            if let rewrite = pendingRewriteText {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .center) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "sparkles")
+                                .foregroundStyle(.pink)
+                                .font(.caption)
+                            let modifiersTitle: String = {
+                                if pendingRewriteModifiers.isEmpty {
+                                    return "Custom Style"
+                                } else {
+                                    return RewriteModifier.allCases
+                                        .filter { pendingRewriteModifiers.contains($0) }
+                                        .map(\.title)
+                                        .joined(separator: " + ")
+                                }
+                            }()
+                            Text("AI Rewrite (\(modifiersTitle)) Result:")
+                                .font(.subheadline.bold())
+                                .foregroundStyle(.primary)
+                        }
+                        Spacer()
+                        Button {
+                            withAnimation {
+                                pendingRewriteText = nil
+                            }
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Dismiss rewrite preview")
+                    }
+
+                    ScrollView {
+                        Text(rewrite)
+                            .font(.system(size: 14))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                    }
+                    .frame(minHeight: 90, maxHeight: 180)
+                    .background(Color(NSColor.textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(Color.pink.opacity(0.3), lineWidth: 1)
+                    )
+
+                    HStack(spacing: 8) {
+                        Button {
+                            lastRevertedText = padText
+                            padText = rewrite
+                            withAnimation {
+                                pendingRewriteText = nil
+                            }
+                            schedulePadCheck(for: rewrite)
+                        } label: {
+                            Label("Take Rewrite (Replace Original)", systemImage: "checkmark.circle.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+
+                        Button {
+                            lastRevertedText = padText
+                            padText = padText.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + rewrite
+                            withAnimation {
+                                pendingRewriteText = nil
+                            }
+                            schedulePadCheck(for: padText)
+                        } label: {
+                            Label("Insert Below Original", systemImage: "text.append")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.regular)
+
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(rewrite, forType: .string)
+                            copiedRewriteNotification = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                copiedRewriteNotification = false
+                            }
+                        } label: {
+                            Label(copiedRewriteNotification ? "Copied!" : "Copy", systemImage: copiedRewriteNotification ? "checkmark" : "doc.on.doc")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.regular)
+
+                        Spacer()
+
+                        Button("Discard") {
+                            withAnimation {
+                                pendingRewriteText = nil
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(14)
+                .background(Color.pink.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(Color.pink.opacity(0.25), lineWidth: 1)
+                )
+            }
         }
+        .padding(16)
     }
 
     // MARK: - Suggestions Column (Right)
@@ -722,13 +742,21 @@ public struct WritingPadView: View {
     private var suggestionsColumn: some View {
         VStack(alignment: .leading, spacing: 10) {
             // Suggestions Header & Action
-            HStack {
-                Text("Suggestions")
-                    .font(.headline)
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 5) {
+                        Text("Suggestions")
+                            .font(.headline)
 
-                Text("(\(padIssues.count))")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                        Text("(\(padIssues.count))")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text("Accept will change the original text")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
 
                 Spacer()
 
@@ -757,10 +785,32 @@ public struct WritingPadView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
+                    .help("Accept all suggestions and update the original text on the left")
                 }
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
+
+            // Guidance Notice Banner
+            if !padIssues.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "pencil.line")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.pink)
+                    Text("Accepting will change the original text on the left.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.primary)
+                    Spacer()
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.pink.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(Color.pink.opacity(0.2), lineWidth: 1)
+                )
+                .padding(.horizontal, 16)
+            }
 
             // Category Filter Pills
             if !padIssues.isEmpty {
@@ -872,7 +922,9 @@ public struct WritingPadView: View {
                                 onAddToDictionary: {
                                     settings.addWordToDictionary(issue.original)
                                     padIssues.removeAll { $0.id == issue.id }
-                                }
+                                },
+                                acceptHelpText: "Accept will replace '\(issue.original)' with '\(issue.replacement)' in the original text",
+                                showsTargetHint: true
                             )
                         }
                     }
