@@ -193,6 +193,54 @@ public enum MacOSNLPEngine {
         "werent": "weren't"
     ]
 
+    private static let commonAbbreviationsBeforePeriod: Set<String> = [
+        "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "no", "fig",
+        "inc", "ltd", "co", "corp", "vs", "etc", "approx", "dept", "est",
+        "min", "max", "misc", "ref", "vol", "jan", "feb", "mar", "apr",
+        "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec"
+    ]
+
+    private static let commonSentenceStarterWords: Set<String> = [
+        "I", "It", "He", "She", "We", "They", "You", "The", "This", "That",
+        "These", "Those", "Can", "Could", "Would", "Should", "Will", "Do",
+        "Does", "Did", "Is", "Are", "Was", "Were", "Have", "Has", "Had",
+        "What", "Why", "How", "When", "Where", "Who", "Which", "Please",
+        "Let", "But", "And", "So", "If", "As", "In", "On", "At", "For",
+        "To", "No", "Yes", "However", "Also", "Then", "There", "Here"
+    ]
+
+    private static let directQuestionOpeners: Set<String> = [
+        "can you", "can i", "can we", "can he", "can she", "can they", "can it", "can this", "can that", "can someone", "can anyone",
+        "could you", "could i", "could we", "could he", "could she", "could they", "could it", "could someone", "could anyone",
+        "would you", "would i", "would we", "would he", "would she", "would they", "would it",
+        "will you", "will i", "will we", "will he", "will she", "will they", "will it", "will this",
+        "should i", "should we", "should you", "should he", "should she", "should they", "should it",
+        "do you", "do i", "do we", "do they",
+        "does it", "does this", "does that", "does he", "does she", "does anyone", "does someone",
+        "did you", "did i", "did we", "did he", "did she", "did they", "did it",
+        "are you", "are we", "are they", "are there", "are these", "are those",
+        "is it", "is this", "is that", "is there", "is he", "is she", "is anyone",
+        "have you", "have we", "have they", "has it", "has he", "has she", "has anyone", "had you",
+        "may i", "may we", "might it",
+        "won't you", "don't you", "didn't you", "doesn't it", "isn't it", "aren't you", "can't you", "can't we", "couldn't you", "wouldn't you", "shouldn't we",
+        "what is", "what's", "what are", "what was", "what were", "what do", "what does", "what did", "what can", "what could", "what would", "what should", "what will", "what have", "what has", "what happened", "what about", "what if",
+        "why is", "why's", "why are", "why was", "why were", "why do", "why does", "why did", "why can", "why can't", "why don't", "why didn't", "why would", "why should",
+        "how is", "how's", "how are", "how was", "how were", "how do", "how does", "how did", "how can", "how could", "how would", "how should", "how will", "how have", "how has", "how many", "how much", "how long", "how often", "how far", "how about", "how come",
+        "where is", "where's", "where are", "where was", "where were", "where do", "where does", "where did", "where can", "where could", "where should", "where will",
+        "when is", "when's", "when are", "when was", "when were", "when do", "when does", "when did", "when can", "when could", "when should", "when will",
+        "who is", "who's", "who are", "who was", "who were", "who did", "who can", "who will", "who has",
+        "which is", "which are", "which one", "which ones"
+    ]
+
+    private static let danglingTrailingWords: Set<String> = [
+        "to", "the", "a", "an", "and", "or", "but", "if", "of", "in", "on", "at",
+        "by", "for", "with", "from", "into", "about", "as", "is", "are", "was",
+        "were", "be", "been", "can", "could", "would", "should", "will", "do",
+        "does", "did", "have", "has", "had", "not", "very", "so", "too", "my",
+        "your", "his", "her", "our", "their", "its", "than", "what", "where",
+        "when", "who", "why", "how", "which", "because", "while", "although"
+    ]
+
     /// Runs a fast, 100% on-device pass combining:
     /// 1. Duplicate consecutive word detection (`"the the"` -> `"the"`)
     /// 2. Indefinite article `a` / `an` phonological validation (`"an typo"` -> `"a typo"`, `"a apple"` -> `"an apple"`)
@@ -375,8 +423,171 @@ public enum MacOSNLPEngine {
             return true
         }
 
-        // Pass 5: NSSpellChecker with contextual correction, entity immunity, and active-caret protection
+        // Pass 5: Inline punctuation spacing, duplicate/mixed punctuation, and sentence-start capitalization
         let checker = NSSpellChecker.shared
+
+        // 5a. Missing space after sentence-ending punctuation (e.g., "not.Can" -> "not. Can", "fixed?Can" -> "fixed? Can")
+        if let missingSpaceRegex = try? NSRegularExpression(pattern: #"\b([A-Za-z]{2,})([\.\?\!])([A-Z][a-z]+)\b"#, options: []) {
+            let matches = missingSpaceRegex.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length))
+            for match in matches {
+                let fullRange = match.range
+                let firstWordRange = match.range(at: 1)
+                let punctRange = match.range(at: 2)
+                let secondWordRange = match.range(at: 3)
+                guard fullRange.location != NSNotFound, !overlapsActiveCaretOrExisting(fullRange) else { continue }
+
+                let firstWord = nsText.substring(with: firstWordRange)
+                let punct = nsText.substring(with: punctRange)
+                let secondWord = nsText.substring(with: secondWordRange)
+
+                // Avoid code identifiers like "object.Property" unless secondWord is a clear English sentence starter
+                if punct == "." && !commonSentenceStarterWords.contains(secondWord) {
+                    continue
+                }
+
+                let orig = nsText.substring(with: fullRange)
+                let repl = "\(firstWord)\(punct) \(secondWord)"
+                issues.append(
+                    WritingIssue(
+                        original: orig,
+                        replacement: repl,
+                        category: .correctness,
+                        explanation: "Add a space after '\(punct)'.",
+                        utf16Location: fullRange.location,
+                        utf16Length: fullRange.length,
+                        isLocalSpellcheck: true
+                    )
+                )
+                coveredRanges.append(fullRange)
+            }
+        }
+
+        // 5b. Duplicate or conflicting terminal punctuation (e.g., "that?." -> "that?", "fixed.." -> "fixed.", "that ? ." -> "that?")
+        if let dupPunctRegex = try? NSRegularExpression(pattern: #"\b([A-Za-z0-9']+)([ \t]*(?:(?<!\.)\.\.(?!\.)|\?\?+|!!+|\?[ \t]*\.|\.[ \t]*\?|,[ \t]*\.))"#, options: []) {
+            let matches = dupPunctRegex.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length))
+            for match in matches {
+                let fullRange = match.range
+                let wordRange = match.range(at: 1)
+                let punctPartRange = match.range(at: 2)
+                guard fullRange.location != NSNotFound, !overlapsActiveCaretOrExisting(fullRange) else { continue }
+
+                let word = nsText.substring(with: wordRange)
+                let punctPart = nsText.substring(with: punctPartRange)
+                let targetPunct: String
+                if punctPart.contains("?") {
+                    targetPunct = "?"
+                } else if punctPart.contains("!") {
+                    targetPunct = "!"
+                } else {
+                    targetPunct = "."
+                }
+                let orig = nsText.substring(with: fullRange)
+                let repl = "\(word)\(targetPunct)"
+                guard orig != repl else { continue }
+
+                issues.append(
+                    WritingIssue(
+                        original: orig,
+                        replacement: repl,
+                        category: .correctness,
+                        explanation: "Use single punctuation mark '\(targetPunct)'.",
+                        utf16Location: fullRange.location,
+                        utf16Length: fullRange.length,
+                        isLocalSpellcheck: true
+                    )
+                )
+                coveredRanges.append(fullRange)
+            }
+        }
+
+        // 5c. Stray space before sentence/clause punctuation (e.g., "that ?" -> "that?", "fixed ." -> "fixed.", "wait ," -> "wait,")
+        if let spaceBeforePunctRegex = try? NSRegularExpression(pattern: #"\b([A-Za-z0-9']+)[ \t]+([\.\?\!,;])(?![\.\?\!0-9A-Za-z])"#, options: []) {
+            let matches = spaceBeforePunctRegex.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length))
+            for match in matches {
+                let fullRange = match.range
+                let wordRange = match.range(at: 1)
+                let punctRange = match.range(at: 2)
+                guard fullRange.location != NSNotFound, !overlapsActiveCaretOrExisting(fullRange) else { continue }
+
+                let word = nsText.substring(with: wordRange)
+                let punct = nsText.substring(with: punctRange)
+
+                // Skip meta-mentions like "punctuation like . or ?"
+                if word.lowercased() == "like" {
+                    let afterIdx = fullRange.location + fullRange.length
+                    if afterIdx < nsText.length {
+                        let tail = nsText.substring(from: afterIdx)
+                        if tail.range(of: #"^[ \t]+(or|and)\b"#, options: [.regularExpression, .caseInsensitive]) != nil {
+                            continue
+                        }
+                    }
+                }
+
+                // Skip if the word itself is misspelled so Pass 6 fixes the spelling first
+                if checker.checkSpelling(of: word, startingAt: 0).location != NSNotFound {
+                    continue
+                }
+
+                let orig = nsText.substring(with: fullRange)
+                let repl = "\(word)\(punct)"
+                issues.append(
+                    WritingIssue(
+                        original: orig,
+                        replacement: repl,
+                        category: .correctness,
+                        explanation: "Remove extra space before '\(punct)'.",
+                        utf16Location: fullRange.location,
+                        utf16Length: fullRange.length,
+                        isLocalSpellcheck: true
+                    )
+                )
+                coveredRanges.append(fullRange)
+            }
+        }
+
+        // 5d. Lowercase start of a sentence after ". ", "? ", or "! " (e.g., "or not. can you" -> "or not. Can you")
+        if let lowerStartRegex = try? NSRegularExpression(pattern: #"\b([A-Za-z]{2,})([\.\?\!])[ \t]+([a-z]{2,})\b"#, options: []) {
+            let matches = lowerStartRegex.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length))
+            for match in matches {
+                let fullRange = match.range
+                let prevWordRange = match.range(at: 1)
+                let punctRange = match.range(at: 2)
+                let nextWordRange = match.range(at: 3)
+                guard fullRange.location != NSNotFound, !overlapsActiveCaretOrExisting(fullRange) else { continue }
+
+                let prevWord = nsText.substring(with: prevWordRange)
+                let punct = nsText.substring(with: punctRange)
+                let nextWord = nsText.substring(with: nextWordRange)
+
+                if punct == "." && commonAbbreviationsBeforePeriod.contains(prevWord.lowercased()) {
+                    continue
+                }
+                if isImmuneToken(nextWord, at: nextWordRange, in: text) || dictionary.contains(where: { $0.caseInsensitiveCompare(nextWord) == .orderedSame }) {
+                    continue
+                }
+                if checker.checkSpelling(of: nextWord, startingAt: 0).location != NSNotFound {
+                    continue
+                }
+
+                let capitalizedNext = nextWord.prefix(1).uppercased() + nextWord.dropFirst()
+                let orig = nsText.substring(with: fullRange)
+                let repl = "\(prevWord)\(punct) \(capitalizedNext)"
+                issues.append(
+                    WritingIssue(
+                        original: orig,
+                        replacement: repl,
+                        category: .correctness,
+                        explanation: "Capitalize '\(capitalizedNext)' at the start of the sentence.",
+                        utf16Location: fullRange.location,
+                        utf16Length: fullRange.length,
+                        isLocalSpellcheck: true
+                    )
+                )
+                coveredRanges.append(fullRange)
+            }
+        }
+
+        // Pass 6: NSSpellChecker with contextual correction, entity immunity, and active-caret protection
         var searchOffset = 0
 
         while searchOffset < nsText.length {
@@ -436,6 +647,82 @@ public enum MacOSNLPEngine {
                     )
                 )
                 coveredRanges.append(misspelledRange)
+            }
+        }
+
+        // Pass 7: Direct question terminal punctuation ("Can you make sure about that" -> "about that?", "Can you check this." -> "check this?")
+        let segments = segmentSentences(in: text)
+        for segment in segments {
+            let segTokenizer = NLTokenizer(unit: .word)
+            segTokenizer.string = segment.text
+            var wordRanges: [NSRange] = []
+            segTokenizer.enumerateTokens(in: segment.text.startIndex..<segment.text.endIndex) { tokenRange, _ in
+                let localRange = NSRange(tokenRange, in: segment.text)
+                wordRanges.append(NSRange(location: segment.utf16Range.location + localRange.location, length: localRange.length))
+                return true
+            }
+
+            guard wordRanges.count >= 4 else { continue }
+            let firstWord = nsText.substring(with: wordRanges[0])
+            let secondWord = nsText.substring(with: wordRanges[1])
+            guard firstWord.first?.isUppercase == true else { continue }
+
+            let opener = "\(firstWord.lowercased()) \(secondWord.lowercased())"
+            guard directQuestionOpeners.contains(opener) else { continue }
+
+            let lastWordRange = wordRanges[wordRanges.count - 1]
+            let secondLastWordRange = wordRanges[wordRanges.count - 2]
+            let afterLastWordLoc = lastWordRange.location + lastWordRange.length
+            let segmentEndLoc = segment.utf16Range.location + segment.utf16Range.length
+
+            let trailingSlice = afterLastWordLoc < segmentEndLoc
+                ? nsText.substring(with: NSRange(location: afterLastWordLoc, length: segmentEndLoc - afterLastWordLoc))
+                : ""
+            let trimmedTrailing = trailingSlice.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if trimmedTrailing == "." {
+                let nsTrailing = trailingSlice as NSString
+                let dotOffset = nsTrailing.range(of: ".").location
+                if dotOffset != NSNotFound {
+                    let fullEndLoc = afterLastWordLoc + dotOffset + 1
+                    let targetRange = NSRange(location: secondLastWordRange.location, length: fullEndLoc - secondLastWordRange.location)
+                    if !overlapsActiveCaretOrExisting(targetRange) {
+                        let origWithDot = nsText.substring(with: targetRange)
+                        let origWordsOnly = nsText.substring(with: NSRange(location: secondLastWordRange.location, length: afterLastWordLoc - secondLastWordRange.location))
+                        issues.append(
+                            WritingIssue(
+                                original: origWithDot,
+                                replacement: "\(origWordsOnly)?",
+                                category: .correctness,
+                                explanation: "Use a question mark '?' at the end of a question.",
+                                utf16Location: targetRange.location,
+                                utf16Length: targetRange.length,
+                                isLocalSpellcheck: true
+                            )
+                        )
+                        coveredRanges.append(targetRange)
+                    }
+                }
+            } else if trimmedTrailing.isEmpty {
+                let lastWordLower = nsText.substring(with: lastWordRange).lowercased()
+                guard !danglingTrailingWords.contains(lastWordLower) else { continue }
+
+                let targetRange = NSRange(location: secondLastWordRange.location, length: afterLastWordLoc - secondLastWordRange.location)
+                if !overlapsActiveCaretOrExisting(targetRange) {
+                    let origPhrase = nsText.substring(with: targetRange)
+                    issues.append(
+                        WritingIssue(
+                            original: origPhrase,
+                            replacement: "\(origPhrase)?",
+                            category: .correctness,
+                            explanation: "Add a question mark '?' at the end of the question.",
+                            utf16Location: targetRange.location,
+                            utf16Length: targetRange.length,
+                            isLocalSpellcheck: true
+                        )
+                    )
+                    coveredRanges.append(targetRange)
+                }
             }
         }
 

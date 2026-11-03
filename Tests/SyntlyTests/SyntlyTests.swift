@@ -1305,6 +1305,129 @@ final class SyntlyEndToEndTests: XCTestCase {
             "I don't know what's going on but I think this is too slow to work properly. As I think it's not dealing with punctuation mark."
         )
     }
+
+    func testLocalNLPPunctuationAndQuestionDetection() {
+        // 1. Direct question missing '?' at the end of a multi-sentence input
+        let text1 = "I want to make sure the bug is already fixed but not sure it's fixed or not. Can you make sure about that"
+        // While caret is actively touching the end of "that", suppress flagging "about that"
+        let activeIssues = MacOSNLPEngine.analyzeLocally(text: text1, caretUTF16Location: (text1 as NSString).length)
+        XCTAssertTrue(activeIssues.isEmpty, "Should not flag missing '?' while user's caret is actively typing the final word")
+
+        // Once typing settles (caretUTF16Location: nil), flag "about that" -> "about that?"
+        let settledIssues = MacOSNLPEngine.analyzeLocally(text: text1, caretUTF16Location: nil)
+        XCTAssertEqual(settledIssues.count, 1)
+        XCTAssertEqual(settledIssues.first?.original, "about that")
+        XCTAssertEqual(settledIssues.first?.replacement, "about that?")
+        XCTAssertEqual(settledIssues.first?.utf16Location, 95)
+
+        // 2. Direct question ending with '.' instead of '?'
+        let text2 = "Can you make sure about that."
+        let issues2 = MacOSNLPEngine.analyzeLocally(text: text2, caretUTF16Location: nil)
+        XCTAssertEqual(issues2.first?.original, "about that.")
+        XCTAssertEqual(issues2.first?.replacement, "about that?")
+
+        // 3. Stray space before '.' and '?'
+        let text3 = "This is already fixed . Are you sure ?"
+        let issues3 = MacOSNLPEngine.analyzeLocally(text: text3, caretUTF16Location: nil)
+        XCTAssertEqual(issues3.count, 2)
+        XCTAssertEqual(issues3[0].original, "fixed .")
+        XCTAssertEqual(issues3[0].replacement, "fixed.")
+        XCTAssertEqual(issues3[1].original, "sure ?")
+        XCTAssertEqual(issues3[1].replacement, "sure?")
+
+        // 4. Duplicate or conflicting punctuation ("?.", "..", "? .") and meta-mention immunity ("like . or ?")
+        let text4 = "How can we better handle punctuation like . or ? ."
+        let issues4 = MacOSNLPEngine.analyzeLocally(text: text4, caretUTF16Location: nil)
+        XCTAssertFalse(issues4.contains { $0.original == "like ." }, "Should not flag meta-mention 'like . or'")
+
+        let text5 = "It is fixed.. Can you check that?."
+        let issues5 = MacOSNLPEngine.analyzeLocally(text: text5, caretUTF16Location: nil)
+        XCTAssertEqual(issues5.count, 2)
+        XCTAssertEqual(issues5[0].original, "fixed..")
+        XCTAssertEqual(issues5[0].replacement, "fixed.")
+        XCTAssertEqual(issues5[1].original, "that?.")
+        XCTAssertEqual(issues5[1].replacement, "that?")
+
+        // 5. Missing space after period & lowercase sentence start
+        let text6 = "It is fixed.Can you check? Yes. it works."
+        let issues6 = MacOSNLPEngine.analyzeLocally(text: text6, caretUTF16Location: nil)
+        XCTAssertEqual(issues6.count, 2)
+        XCTAssertEqual(issues6[0].original, "fixed.Can")
+        XCTAssertEqual(issues6[0].replacement, "fixed. Can")
+        XCTAssertEqual(issues6[1].original, "Yes. it")
+        XCTAssertEqual(issues6[1].replacement, "Yes. It")
+    }
+
+    @MainActor
+    func testSequentialAltTabFixesOverlappingAndQuestionPunctuationCleanly() async throws {
+        settings.enableLocalSpellcheck = true
+        let initialText = "I want to make sure the bug is alrady fix but not sure it's fixed or not. Can you make sure about that"
+        let mockElectron = SimulatedSlackBulletAXAccessor(axValueText: initialText)
+        axEngine.elementAccessor = mockElectron
+        axEngine.setTestingFocusedElement(AXUIElementCreateSystemWide())
+
+        // Simulate Gemini returning "alrady fix" -> "already fixed" (overlapping local spellcheck's "alrady" -> "already")
+        MockGeminiURLProtocol.requestHandler = { request in
+            let responseJSON = """
+            {
+              "choices": [{
+                "message": {
+                  "content": "{\\"issues\\": [{\\"original\\": \\"alrady fix\\", \\"replacement\\": \\"already fixed\\", \\"category\\": \\"correctness\\", \\"explanation\\": \\"Fix spelling and verb form.\\"}]}"
+                }
+              }]
+            }
+            """
+            let http = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            return (http, Data(responseJSON.utf8))
+        }
+
+        // User finishes typing the sentence
+        coordinator.axEngineDidUpdateContext(
+            FocusedTextContext(
+                appName: "Antigravity",
+                bundleID: "com.google.antigravity",
+                pid: 999,
+                fullText: initialText,
+                selectedText: "",
+                selectedRange: NSRange(location: (initialText as NSString).length, length: 0)
+            )
+        )
+
+        // Wait for debounced proofread + settled local NLP pass
+        try await Task.sleep(nanoseconds: 220_000_000)
+
+        // Must have exactly 2 non-overlapping issues:
+        // 1. "alrady fix" -> "already fixed" (at 31, length 10) -- local "alrady" (at 31, length 6) must be deduplicated!
+        // 2. "about that" -> "about that?" (at 92, length 10) -- detected by settled local NLP Pass 7!
+        XCTAssertEqual(coordinator.issues.count, 2)
+        XCTAssertEqual(coordinator.issues[0].original, "alrady fix")
+        XCTAssertEqual(coordinator.issues[0].replacement, "already fixed")
+        XCTAssertEqual(coordinator.issues[0].utf16Location, 31)
+        XCTAssertEqual(coordinator.issues[1].original, "about that")
+        XCTAssertEqual(coordinator.issues[1].replacement, "about that?")
+        XCTAssertEqual(coordinator.issues[1].utf16Location, 92)
+
+        // Alt+Tab #1: Accepts "alrady fix" -> "already fixed"
+        coordinator.acceptIssue(coordinator.issues[0])
+        XCTAssertEqual(
+            mockElectron.axValueText,
+            "I want to make sure the bug is already fixed but not sure it's fixed or not. Can you make sure about that"
+        )
+
+        // Only 1 issue ("about that" -> "about that?" shifted by +3 to utf16Location 95) should remain
+        XCTAssertEqual(coordinator.issues.count, 1)
+        XCTAssertEqual(coordinator.issues[0].original, "about that")
+        XCTAssertEqual(coordinator.issues[0].utf16Location, 95)
+
+        // Alt+Tab #2: Accepts "about that" -> "about that?"
+        coordinator.acceptIssue(coordinator.issues[0])
+        XCTAssertEqual(
+            mockElectron.axValueText,
+            "I want to make sure the bug is already fixed but not sure it's fixed or not. Can you make sure about that?"
+        )
+        XCTAssertTrue(coordinator.issues.isEmpty)
+        XCTAssertEqual(coordinator.pillState, PillVisualState.allClear)
+    }
 }
 
 // MARK: - Simulated Slack / Chromium Rich-Text List AXUIElement Accessor

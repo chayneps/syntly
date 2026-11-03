@@ -99,7 +99,7 @@ public final class AXEngine {
     private var workspaceTokens: [NSObjectProtocol] = []
     private var trustPollTimer: Timer?
     private var enabledElectronPIDs = Set<pid_t>()
-    private var isApplyingReplacement: Bool = false
+    public private(set) var isApplyingReplacement: Bool = false
 
     public init() {}
 
@@ -700,8 +700,15 @@ public final class AXEngine {
     ) -> NSRange? {
         guard rawRange.location != NSNotFound, rawRange.length > 0 else { return nil }
 
+        let priorSelectionRange = copyRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute)
         let listDrifts = Self.estimateListMarkerDrifts(in: fullText, upTo: rawRange.location)
         var triedLocations = Set<Int>()
+
+        func restorePriorSelection() {
+            if let prior = priorSelectionRange {
+                _ = setRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute, range: prior)
+            }
+        }
 
         func tryLocation(_ loc: Int) -> (matched: Bool, actualText: String?) {
             guard loc >= 0 else { return (false, nil) }
@@ -729,6 +736,7 @@ public final class AXEngine {
             if initialAttempt.actualText == nil || initialAttempt.actualText == "" {
                 return rawRange
             }
+            restorePriorSelection()
             return nil
         }
 
@@ -798,6 +806,7 @@ public final class AXEngine {
         }
 
         // Never overwrite unverified mismatched text if `kAXSelectedTextAttribute` reported different non-empty text
+        restorePriorSelection()
         return nil
     }
 

@@ -243,9 +243,6 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
                 in: ctx.fullText
             )
             if liveRange.location != NSNotFound {
-                if let active = activeWordInFullText, NSIntersectionRange(active, liveRange).length > 0 {
-                    continue
-                }
                 existing.utf16Location = liveRange.location
                 existing.utf16Length = liveRange.length
                 provisionalIssues.append(existing)
@@ -269,10 +266,22 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             candidate.utf16Location = liveRange.location
             candidate.utf16Length = liveRange.length
 
-            let alreadyPresent = provisionalIssues.contains {
-                $0.original == candidate.original && abs(($0.utf16Location ?? -100) - liveRange.location) <= 2
+            let overlappingIndices = provisionalIssues.indices.filter { idx in
+                let existingRange = NSRange(
+                    location: provisionalIssues[idx].utf16Location ?? 0,
+                    length: provisionalIssues[idx].utf16Length ?? (provisionalIssues[idx].original as NSString).length
+                )
+                return NSIntersectionRange(existingRange, liveRange).length > 0
             }
-            if !alreadyPresent {
+            if overlappingIndices.isEmpty {
+                provisionalIssues.append(candidate)
+            } else if overlappingIndices.allSatisfy({ idx in
+                let existingLen = provisionalIssues[idx].utf16Length ?? (provisionalIssues[idx].original as NSString).length
+                return liveRange.length > existingLen || (!candidate.isLocalSpellcheck && provisionalIssues[idx].isLocalSpellcheck)
+            }) {
+                for idx in overlappingIndices.reversed() {
+                    provisionalIssues.remove(at: idx)
+                }
                 provisionalIssues.append(candidate)
             }
         }
@@ -324,6 +333,12 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
     }
 
     private func performProofread(on text: String, localPreIssues: [WritingIssue], baseOffset: Int = 0) async {
+        // Re-run local NLP & spellcheck with `caretUTF16Location: nil` now that the user has paused typing
+        // for the debounce interval, so sentence-final words and missing question marks at the caret are detected.
+        let settledLocalIssues = geminiService.runLocalSpellcheck(on: text, caretUTF16Location: nil)
+            .filter { !dismissedOriginals.contains($0.original) }
+            .map { Self.offsetIssue($0, by: baseOffset) }
+
         do {
             let aiIssues = try await geminiService.proofread(text: text)
             guard !Task.isCancelled else { return }
@@ -337,8 +352,22 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             var combined = aiIssues
                 .filter { !dismissedOriginals.contains($0.original) }
                 .map { Self.offsetIssue($0, by: baseOffset) }
-            for local in localPreIssues where !dismissedOriginals.contains(local.original) {
-                if !combined.contains(where: { $0.original.localizedCaseInsensitiveContains(local.original) }) {
+
+            for local in (settledLocalIssues.isEmpty ? localPreIssues : settledLocalIssues) where !dismissedOriginals.contains(local.original) {
+                let localRange = NSRange(
+                    location: local.utf16Location ?? 0,
+                    length: local.utf16Length ?? (local.original as NSString).length
+                )
+                let overlapsExisting = combined.contains { existing in
+                    let existingRange = NSRange(
+                        location: existing.utf16Location ?? 0,
+                        length: existing.utf16Length ?? (existing.original as NSString).length
+                    )
+                    return NSIntersectionRange(localRange, existingRange).length > 0
+                        || existing.original.localizedCaseInsensitiveContains(local.original)
+                        || local.original.localizedCaseInsensitiveContains(existing.original)
+                }
+                if !overlapsExisting {
                     combined.append(local)
                 }
             }
@@ -354,9 +383,10 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         } catch {
             guard !Task.isCancelled else { return }
             self.lastErrorMessage = error.localizedDescription
-            if !localPreIssues.isEmpty {
-                self.issues = localPreIssues
-                self.pillState = .issuesFound(count: localPreIssues.count, topCategory: .correctness)
+            let fallbackLocal = settledLocalIssues.isEmpty ? localPreIssues : settledLocalIssues
+            if !fallbackLocal.isEmpty {
+                self.issues = fallbackLocal
+                self.pillState = .issuesFound(count: fallbackLocal.count, topCategory: .correctness)
             } else {
                 self.pillState = .error(message: error.localizedDescription)
             }
@@ -370,6 +400,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
     public var onAllIssuesAccepted: (([WritingIssue], String) -> Void)?
 
     public func acceptIssue(_ issue: WritingIssue) {
+        guard !axEngine.isApplyingReplacement else { return }
         debounceTask?.cancel()
         dismissedOriginals.insert(issue.original)
         geminiService.clearCache()
@@ -395,13 +426,13 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         onIssueAccepted?(issue)
 
         let delta = (issue.replacement as NSString).length - (issue.original as NSString).length
-        let replacedLoc = matchedRange.location != NSNotFound ? matchedRange.location : (issue.utf16Location ?? 0)
+        let replacedLoc = matchedRange.location
 
-        if let current = currentContext, matchedRange.location != NSNotFound {
+        if let current = currentContext {
             let nsCurrent = current.fullText as NSString
             if matchedRange.location + matchedRange.length <= nsCurrent.length {
                 let updated = nsCurrent.replacingCharacters(in: matchedRange, with: issue.replacement)
-                self.currentContext = FocusedTextContext(
+                let updatedContext = FocusedTextContext(
                     appName: current.appName,
                     bundleID: current.bundleID,
                     pid: current.pid,
@@ -410,13 +441,23 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
                     selectedRange: current.selectedRange,
                     anchorAppKitPoint: current.anchorAppKitPoint
                 )
-                self.lastAnalyzedParagraph = ""
+                self.currentContext = updatedContext
+                self.lastAnalyzedParagraph = updatedContext.analysisText
             }
         }
 
-        // Shift UTF-16 offsets of remaining issues located after the accepted issue
+        // Remove the accepted issue AND any overlapping sub-issues covering the same UTF-16 range,
+        // and shift UTF-16 offsets of remaining issues located after the accepted issue.
         var remaining: [WritingIssue] = []
         for var item in issues where item.id != issue.id && !(item.original == issue.original && item.replacement == issue.replacement) {
+            let itemRange = NSRange(
+                location: item.utf16Location ?? 0,
+                length: item.utf16Length ?? (item.original as NSString).length
+            )
+            if NSIntersectionRange(itemRange, matchedRange).length > 0 {
+                dismissedOriginals.insert(item.original)
+                continue
+            }
             if let loc = item.utf16Location, loc > replacedLoc {
                 item.utf16Location = max(0, loc + delta)
             }

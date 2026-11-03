@@ -331,7 +331,7 @@ public final class LLMService {
 
         CORE PRINCIPLES:
         1. High Precision & Minimal Edits: Fix genuine mistakes (spelling, grammar, punctuation, misused words). Do NOT rewrite casual, informal, or stylistic phrasing if it is already grammatically valid.
-        2. In-Progress Typing Awareness: The user is actively typing in real-time. Do NOT flag sentence fragments, trailing clauses, or lack of final punctuation at the very end of the input if the sentence appears in-progress.
+        2. Punctuation & In-Progress Awareness: Do NOT flag an incomplete trailing clause when the user is clearly mid-phrase (e.g. ending with "to", "the", "and", "because"). However, DO flag missing question marks (?) at the end of complete direct questions (e.g. "Can you make sure about that" -> original: "about that", replacement: "about that?"), wrong terminal punctuation on questions (e.g. "about that." -> "about that?"), extra spaces before punctuation (e.g. "test ." -> "test.", "that ?" -> "that?"), and missing spaces or capitalization after periods. When adding or fixing punctuation at the end of a sentence, always include the last 2 words in "original" and "replacement" so the match location is unique.
         3. Code & Identifier Immunity: Never flag or alter URLs, email addresses, file paths, code snippets, camelCase/snake_case variable names, markdown formatting, or @mentions.
         4. Unique Verbatim Matching: "original" MUST be an exact, case-sensitive substring from the input text. If a word appears multiple times, include 1–2 adjacent context words so "original" appears EXACTLY ONCE in the text.
         5. Drop-in Replacement: "replacement" MUST be the exact drop-in replacement for "original" with matching capitalization and punctuation.
@@ -450,7 +450,6 @@ public final class LLMService {
         let nsText = sourceText as NSString
         let normNsText = AXEngine.normalizeTypographicCharacters(sourceText) as NSString
         var results: [WritingIssue] = []
-        var usedLocations = Set<Int>()
 
         for raw in rawIssues {
             let stripped = stripSharedListMarkerPrefix(original: raw.original, replacement: raw.replacement)
@@ -466,21 +465,49 @@ public final class LLMService {
 
             let category = IssueCategory(rawValue: raw.category.lowercased()) ?? .correctness
 
-            // Find occurrence in sourceText, strictly requiring whole-word boundaries
+            // Collect all whole-word occurrences in sourceText
             var searchRange = NSRange(location: 0, length: normNsText.length)
-            var matchedRange: NSRange?
+            var candidateRanges: [NSRange] = []
 
             while searchRange.location < normNsText.length {
                 let found = normNsText.range(of: normOrig, options: [], range: searchRange)
                 guard found.location != NSNotFound else { break }
-                if !usedLocations.contains(found.location),
-                   AXEngine.isWholeWordMatch(range: found, of: normOrig, in: normNsText) {
-                    matchedRange = found
-                    usedLocations.insert(found.location)
-                    break
+                if AXEngine.isWholeWordMatch(range: found, of: normOrig, in: normNsText) {
+                    candidateRanges.append(found)
                 }
                 let nextLoc = found.location + max(1, found.length)
                 searchRange = NSRange(location: nextLoc, length: normNsText.length - nextLoc)
+            }
+
+            guard !candidateRanges.isEmpty else { continue }
+
+            // When adding terminal punctuation ("?", ".", "!"), prefer the last occurrence in the sentence/text
+            let isTerminalPunctuationAddition = (repl == orig + "?" || repl == orig + "." || repl == orig + "!")
+            let orderedCandidates = isTerminalPunctuationAddition ? Array(candidateRanges.reversed()) : candidateRanges
+
+            var matchedRange: NSRange?
+            for found in orderedCandidates {
+                let overlappingIndices = results.indices.filter { idx in
+                    let existingRange = NSRange(
+                        location: results[idx].utf16Location ?? 0,
+                        length: results[idx].utf16Length ?? (results[idx].original as NSString).length
+                    )
+                    return NSIntersectionRange(existingRange, found).length > 0
+                }
+                if overlappingIndices.isEmpty {
+                    matchedRange = found
+                    break
+                } else if overlappingIndices.allSatisfy({ idx in
+                    let existingLen = results[idx].utf16Length ?? (results[idx].original as NSString).length
+                    return found.length > existingLen
+                }) {
+                    // Replace narrower sub-issue(s) with this broader multi-word phrase issue
+                    for idx in overlappingIndices.reversed() {
+                        results.remove(at: idx)
+                    }
+                    matchedRange = found
+                    break
+                }
             }
 
             if let range = matchedRange {
