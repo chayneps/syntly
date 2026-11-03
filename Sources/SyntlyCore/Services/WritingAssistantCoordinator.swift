@@ -313,6 +313,9 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         do {
             let aiIssues = try await geminiService.proofread(text: text)
             guard !Task.isCancelled else { return }
+            if let currentAnalysis = currentContext?.analysisText, currentAnalysis != text {
+                return
+            }
 
             lastAnalyzedParagraph = text
             lastErrorMessage = nil
@@ -352,6 +355,10 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
     public var onAllIssuesAccepted: (([WritingIssue], String) -> Void)?
 
     public func acceptIssue(_ issue: WritingIssue) {
+        debounceTask?.cancel()
+        dismissedOriginals.insert(issue.original)
+        geminiService.clearCache()
+
         let currentText = currentContext?.fullText ?? lastAnalyzedParagraph
         let matchedRange = AXEngine.findBestOccurrenceRange(
             of: issue.original,
@@ -378,33 +385,43 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
                     selectedRange: current.selectedRange,
                     anchorAppKitPoint: current.anchorAppKitPoint
                 )
-                self.lastAnalyzedParagraph = updated
+                self.lastAnalyzedParagraph = ""
             }
         }
 
         // Shift UTF-16 offsets of remaining issues located after the accepted issue
         var remaining: [WritingIssue] = []
-        for var item in issues where item.id != issue.id {
+        for var item in issues where item.id != issue.id && !(item.original == issue.original && item.replacement == issue.replacement) {
             if let loc = item.utf16Location, loc > replacedLoc {
                 item.utf16Location = max(0, loc + delta)
             }
             remaining.append(item)
         }
         issues = remaining
-        updatePillStateFromIssues()
-        geminiService.clearCache()
 
-        if issues.isEmpty && isPopoverExpanded {
-            isPopoverExpanded = false
-            onOverlayStateChanged?()
+        if issues.isEmpty {
+            pillState = .allClear
+            if isPopoverExpanded {
+                isPopoverExpanded = false
+            }
+        } else {
+            updatePillStateFromIssues()
         }
+        onOverlayStateChanged?()
     }
 
     public func acceptAllIssues() {
+        debounceTask?.cancel()
+        geminiService.clearCache()
+        lastAnalyzedParagraph = ""
+
         guard var workingText = currentContext?.fullText ?? (lastAnalyzedParagraph.isEmpty ? nil : lastAnalyzedParagraph) else {
             return
         }
         let accepted = self.issues
+        for item in accepted {
+            dismissedOriginals.insert(item.original)
+        }
 
         // Resolve ranges in workingText and apply from end to start so earlier replacements never shift later ranges
         let resolvedPairs: [(issue: WritingIssue, range: NSRange)] = issues.compactMap { issue in
@@ -427,7 +444,11 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
 
         _ = axEngine.replaceSelectedOrFullText(with: workingText)
 
-        geminiService.clearCache()
+        issues = []
+        pillState = .allClear
+        isPopoverExpanded = false
+        onOverlayStateChanged?()
+
         onAllIssuesAccepted?(accepted, workingText)
 
         if let current = currentContext {
@@ -440,16 +461,12 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
                 selectedRange: current.selectedRange,
                 anchorAppKitPoint: current.anchorAppKitPoint
             )
-            self.lastAnalyzedParagraph = workingText
         }
-
-        issues.removeAll()
-        updatePillStateFromIssues()
     }
 
     public func dismissIssue(_ issue: WritingIssue) {
         dismissedOriginals.insert(issue.original)
-        issues.removeAll { $0.id == issue.id }
+        issues.removeAll { $0.id == issue.id || ($0.original == issue.original && $0.replacement == issue.replacement) }
         updatePillStateFromIssues()
 
         if issues.isEmpty && isPopoverExpanded {
