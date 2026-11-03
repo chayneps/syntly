@@ -434,7 +434,21 @@ public final class AXEngine {
             searchRange = NSRange(location: nextLoc, length: normText.length - nextLoc)
         }
 
-        return bestWholeWordRange.location != NSNotFound ? bestWholeWordRange : bestFallbackRange
+        if bestWholeWordRange.location != NSNotFound {
+            return bestWholeWordRange
+        }
+
+        // Substrings that start and end with alphanumeric characters must strictly match whole-word boundaries.
+        // Never allow partial substring matches (e.g. matching "tst" inside "tste", or "his" inside "this").
+        let alphanumerics = CharacterSet.alphanumerics
+        let nsSub = normSub as NSString
+        let startsWithWordChar = UnicodeScalar(nsSub.character(at: 0)).map { alphanumerics.contains($0) } ?? false
+        let endsWithWordChar = UnicodeScalar(nsSub.character(at: nsSub.length - 1)).map { alphanumerics.contains($0) } ?? false
+        if startsWithWordChar && endsWithWordChar {
+            return NSRange(location: NSNotFound, length: 0)
+        }
+
+        return bestFallbackRange
     }
 
     /// Estimates candidate UTF-16 offset drifts caused by rich-text bullet / numbered list markers or CRLF line endings

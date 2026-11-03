@@ -413,6 +413,18 @@ final class SyntlyUnitTests: XCTestCase {
         XCTAssertTrue(l1Issues.contains(where: { $0.original == "Let try" && $0.replacement == "Let's try" }))
     }
 
+    func testWordBoundaryRejectionPreventsPartialWordReplacement() {
+        let text = "Hello this is a tste"
+        // "tst" is an exact substring of "tste", but NOT a whole word.
+        let range = AXEngine.findBestOccurrenceRange(of: "tst", preferredUTF16Location: 16, in: text)
+        XCTAssertEqual(range.location, NSNotFound, "Must NOT match 'tst' inside 'tste'")
+
+        // In resolveIssues:
+        let raw = [ProofreadResult.RawIssue(original: "tst", replacement: "test", category: "correctness", explanation: "Typo.")]
+        let resolved = GeminiService.resolveIssues(raw, in: text, dictionary: [])
+        XCTAssertTrue(resolved.isEmpty, "resolveIssues must reject 'tst' when text contains 'tste'")
+    }
+
     func testSentenceSegmentationAndIncrementalSentenceCacheWhileTyping() {
         let settings = AppSettings()
         let service = GeminiService(settings: settings)

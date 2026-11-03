@@ -365,6 +365,16 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             preferredUTF16Location: issue.utf16Location,
             in: currentText
         )
+        guard matchedRange.location != NSNotFound else {
+            // Word no longer exists in currentText as a whole word (user edited it or moved on)
+            issues.removeAll { $0.id == issue.id || $0.original == issue.original }
+            updatePillStateFromIssues()
+            if issues.isEmpty && isPopoverExpanded {
+                isPopoverExpanded = false
+            }
+            onOverlayStateChanged?()
+            return
+        }
         _ = axEngine.applyIssueReplacement(issue, in: currentText)
 
         onIssueAccepted?(issue)

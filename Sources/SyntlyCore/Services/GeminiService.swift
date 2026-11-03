@@ -484,8 +484,14 @@ public final class LLMService {
             }
 
             if matchedRange == nil, let partial = fallbackPartialRange {
-                matchedRange = partial
-                usedLocations.insert(partial.location)
+                let alphanumerics = CharacterSet.alphanumerics
+                let nsOrig = normOrig as NSString
+                let startsWithWordChar = UnicodeScalar(nsOrig.character(at: 0)).map { alphanumerics.contains($0) } ?? false
+                let endsWithWordChar = UnicodeScalar(nsOrig.character(at: nsOrig.length - 1)).map { alphanumerics.contains($0) } ?? false
+                if !startsWithWordChar || !endsWithWordChar {
+                    matchedRange = partial
+                    usedLocations.insert(partial.location)
+                }
             }
 
             if let range = matchedRange {
