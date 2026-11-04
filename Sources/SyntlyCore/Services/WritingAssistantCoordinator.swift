@@ -14,6 +14,9 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
     @Published public var isRewriteTabActive: Bool = false
     @Published public var isRewriting: Bool = false
     @Published public var openedByHover: Bool = false
+    @Published public var isBadgeHovered: Bool = false
+    @Published public var isPillHovered: Bool = false
+    @Published public var isDialogHovered: Bool = false
     @Published public var rewrittenPreview: String?
     @Published public var customRewritePrompt: String = ""
     @Published public private(set) var lastErrorMessage: String?
@@ -23,6 +26,8 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
     public let settings: AppSettings
     private let hotkeyMonitor = GlobalHotkeyMonitor()
     private var debounceTask: Task<Void, Never>?
+    private var hoverOpenTask: Task<Void, Never>?
+    private var hoverCloseTask: Task<Void, Never>?
     private var dismissedOriginals = Set<String>()
     private var lastAnalyzedParagraph: String = ""
 
@@ -115,13 +120,98 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
     }
 
     public func togglePopover() {
-        openedByHover = false
+        cancelHoverTimers()
         axEngine.pollCurrentFocusedElement()
         isPopoverExpanded.toggle()
         if isPopoverExpanded, let ctx = currentContext {
             triggerImmediateCheck(for: ctx.analysisText, baseOffset: ctx.analysisRange.location)
         }
         onOverlayStateChanged?()
+    }
+
+    // MARK: - Hover Peek & Auto-Dismiss Logic
+
+    public func handleBadgeHover(_ hovering: Bool) {
+        isBadgeHovered = hovering
+
+        guard case .issuesFound = pillState else {
+            hoverOpenTask?.cancel()
+            hoverOpenTask = nil
+            return
+        }
+
+        if hovering {
+            hoverCloseTask?.cancel()
+            hoverCloseTask = nil
+
+            if isPopoverExpanded { return }
+
+            hoverOpenTask?.cancel()
+            hoverOpenTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                guard !self.isPopoverExpanded else { return }
+                guard case .issuesFound = self.pillState else { return }
+                self.openedByHover = true
+                self.isPopoverExpanded = true
+                self.onOverlayStateChanged?()
+            }
+        } else {
+            hoverOpenTask?.cancel()
+            hoverOpenTask = nil
+
+            if isPopoverExpanded && openedByHover && !isDialogHovered && !isPillHovered {
+                scheduleHoverClose(delay: 0.5)
+            }
+        }
+    }
+
+    public func handlePillHover(_ hovering: Bool) {
+        isPillHovered = hovering
+        if hovering {
+            hoverCloseTask?.cancel()
+            hoverCloseTask = nil
+        } else {
+            if isPopoverExpanded && openedByHover && !isDialogHovered && !isBadgeHovered {
+                scheduleHoverClose(delay: 0.5)
+            }
+        }
+    }
+
+    public func handleDialogHover(_ hovering: Bool) {
+        isDialogHovered = hovering
+        if hovering {
+            hoverCloseTask?.cancel()
+            hoverCloseTask = nil
+        } else {
+            if isPopoverExpanded && openedByHover && !isPillHovered && !isBadgeHovered {
+                scheduleHoverClose(delay: 0.5)
+            }
+        }
+    }
+
+    public func scheduleHoverClose(delay: Double = 0.5) {
+        hoverCloseTask?.cancel()
+        hoverCloseTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            guard self.isPopoverExpanded && self.openedByHover else { return }
+            guard !self.isDialogHovered && !self.isPillHovered && !self.isBadgeHovered else { return }
+            self.isPopoverExpanded = false
+            self.cancelHoverTimers()
+            self.onOverlayStateChanged?()
+        }
+    }
+
+    public func cancelHoverTimers() {
+        hoverOpenTask?.cancel()
+        hoverOpenTask = nil
+        hoverCloseTask?.cancel()
+        hoverCloseTask = nil
+        isBadgeHovered = false
+        isPillHovered = false
+        isDialogHovered = false
+        openedByHover = false
     }
 
     private static func offsetIssue(_ issue: WritingIssue, by baseOffset: Int) -> WritingIssue {
@@ -422,7 +512,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             updatePillStateFromIssues()
             if issues.isEmpty && isPopoverExpanded {
                 isPopoverExpanded = false
-                openedByHover = false
+                cancelHoverTimers()
             }
             onOverlayStateChanged?()
             return
@@ -476,7 +566,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             pillState = .allClear
             if isPopoverExpanded {
                 isPopoverExpanded = false
-                openedByHover = false
+                cancelHoverTimers()
             }
         } else {
             updatePillStateFromIssues()
@@ -493,7 +583,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             issues = []
             pillState = .allClear
             isPopoverExpanded = false
-            openedByHover = false
+            cancelHoverTimers()
             onOverlayStateChanged?()
             return
         }
@@ -526,7 +616,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         issues = []
         pillState = .allClear
         isPopoverExpanded = false
-        openedByHover = false
+        cancelHoverTimers()
         onOverlayStateChanged?()
 
         onAllIssuesAccepted?(accepted, workingText)

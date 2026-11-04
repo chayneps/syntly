@@ -1,60 +1,44 @@
 import SwiftUI
 
-public struct FloatingOverlayView: View {
+public enum OverlayTab: String, CaseIterable {
+    case suggestions = "Suggestions"
+    case rewrite = "Rewrite"
+}
+
+// MARK: - App Icon Loader
+
+func loadAppIconImage() -> NSImage? {
+    if let img = NSApp.applicationIconImage, img.isValid {
+        return img
+    }
+    if let url = Bundle.main.url(forResource: "app_icon_1024", withExtension: "png"),
+       let img = NSImage(contentsOf: url) {
+        return img
+    }
+    let devPath = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("assets/app_icon_1024.png")
+    if let img = NSImage(contentsOf: devPath) {
+        return img
+    }
+    return nil
+}
+
+// MARK: - Floating Pill View (48x48 Companion)
+
+public struct FloatingPillView: View {
     @ObservedObject var coordinator: WritingAssistantCoordinator
-    @State private var selectedTab: OverlayTab = .suggestions
     @State private var isHovered: Bool = false
     @State private var hasPushedCursor: Bool = false
-    @State private var isBadgeHovered: Bool = false
-    @State private var isDialogHovered: Bool = false
-    @State private var hoverOpenTask: Task<Void, Never>? = nil
-    @State private var hoverCloseTask: Task<Void, Never>? = nil
-
-    public enum OverlayTab: String, CaseIterable {
-        case suggestions = "Suggestions"
-        case rewrite = "Rewrite"
-    }
 
     public init(coordinator: WritingAssistantCoordinator) {
         self.coordinator = coordinator
     }
 
     public var body: some View {
-        Group {
-            if coordinator.isPopoverExpanded {
-                expandedCardView
-            } else {
-                compactIconView
-            }
-        }
-        .frame(
-            width: coordinator.isPopoverExpanded ? 380 : 48,
-            height: coordinator.isPopoverExpanded ? 348 : 48
-        )
-        .onChange(of: coordinator.isPopoverExpanded) { _, isExpanded in
-            if !isExpanded {
-                coordinator.openedByHover = false
-                hoverOpenTask?.cancel()
-                hoverOpenTask = nil
-                hoverCloseTask?.cancel()
-                hoverCloseTask = nil
-                isBadgeHovered = false
-                isDialogHovered = false
-            }
-        }
-        .onChange(of: coordinator.pillState) { _, newState in
-            if case .issuesFound = newState {
-                // Keep active
-            } else {
-                hoverOpenTask?.cancel()
-                hoverOpenTask = nil
-            }
-        }
-    }
-
-    // MARK: - Compact Top-Left Floating Icon (Manga Thought Bubble)
-
-    private var compactIconView: some View {
         ZStack(alignment: .topTrailing) {
             // 1. Center Manga Thought Bubble App Icon
             Group {
@@ -84,6 +68,7 @@ public struct FloatingOverlayView: View {
         .contentShape(Rectangle())
         .onHover { hovering in
             isHovered = hovering
+            coordinator.handlePillHover(hovering)
             if hovering && !hasPushedCursor {
                 hasPushedCursor = true
                 NSCursor.openHand.push()
@@ -108,7 +93,7 @@ public struct FloatingOverlayView: View {
         case .checking:
             return "Synt(ax)ly — Checking your writing… • Drag to move • Right-click for options"
         case .issuesFound(let count, _):
-            return "Synt(ax)ly — \(count) fix\(count == 1 ? "" : "es") found • Quick-accept: ⌥Tab • Drag to move • Click to view (⌘⇧G) • Right-click for options"
+            return "Synt(ax)ly — \(count) fix\(count == 1 ? "" : "es") found • Quick-accept: ⌥Tab • Drag to move • Hover badge to peek • Click to view • Right-click for options"
         case .paused:
             return "Synt(ax)ly — Paused • Click to resume • Right-click for options"
         case .error:
@@ -140,14 +125,14 @@ public struct FloatingOverlayView: View {
                     .background(topCategory.badgeColor, in: Capsule())
                     .overlay(Capsule().strokeBorder(.white, lineWidth: 1.5))
                     .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
-                    .scaleEffect(isBadgeHovered ? 1.15 : 1.0)
-                    .animation(.spring(response: 0.2, dampingFraction: 0.7), value: isBadgeHovered)
+                    .scaleEffect(coordinator.isBadgeHovered ? 1.15 : 1.0)
+                    .animation(.spring(response: 0.2, dampingFraction: 0.7), value: coordinator.isBadgeHovered)
                     .offset(x: 5, y: -5)
             }
             .frame(width: 26, height: 26, alignment: .topTrailing)
             .contentShape(Rectangle())
             .onHover { hovering in
-                handleBadgeHover(hovering)
+                coordinator.handleBadgeHover(hovering)
             }
             .help("Hover 1s to peek • Click to view")
 
@@ -166,30 +151,19 @@ public struct FloatingOverlayView: View {
                 .offset(x: 4, y: -4)
         }
     }
+}
 
-    private func loadAppIconImage() -> NSImage? {
-        if let img = NSApp.applicationIconImage, img.isValid {
-            return img
-        }
-        if let url = Bundle.main.url(forResource: "app_icon_1024", withExtension: "png"),
-           let img = NSImage(contentsOf: url) {
-            return img
-        }
-        let devPath = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("assets/app_icon_1024.png")
-        if let img = NSImage(contentsOf: devPath) {
-            return img
-        }
-        return nil
+// MARK: - Floating Dialog View (380x348 Expanded Card)
+
+public struct FloatingDialogView: View {
+    @ObservedObject var coordinator: WritingAssistantCoordinator
+    @State private var selectedTab: OverlayTab = .suggestions
+
+    public init(coordinator: WritingAssistantCoordinator) {
+        self.coordinator = coordinator
     }
 
-    // MARK: - Expanded Suggestion & Rewrite Card
-
-    private var expandedCardView: some View {
+    public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             headerBar
 
@@ -222,7 +196,7 @@ public struct FloatingOverlayView: View {
         )
         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .onHover { hovering in
-            handleDialogHover(hovering)
+            coordinator.handleDialogHover(hovering)
         }
         .simultaneousGesture(
             TapGesture().onEnded {
@@ -284,7 +258,7 @@ public struct FloatingOverlayView: View {
             }
 
             Button {
-                coordinator.openedByHover = false
+                coordinator.cancelHoverTimers()
                 coordinator.isPopoverExpanded = false
                 coordinator.onOverlayStateChanged?()
             } label: {
@@ -398,6 +372,8 @@ public struct FloatingOverlayView: View {
                             .padding(8)
                             .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
                     }
+                    .frame(maxHeight: 140)
+
                     HStack {
                         Button("Replace in App") {
                             coordinator.applyRewrittenPreview()
@@ -416,27 +392,36 @@ public struct FloatingOverlayView: View {
                     }
                 }
             } else {
-                Spacer()
-                Text("Select a tone preset above or enter a custom instruction to rewrite the current selection or paragraph.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity)
-                Spacer()
+                VStack(spacing: 6) {
+                    Spacer()
+                    Image(systemName: "wand.and.stars")
+                        .font(.system(size: 24))
+                        .foregroundStyle(.purple)
+                    Text("Select a preset above to rewrite your current paragraph")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity)
             }
         }
     }
+
+    // MARK: - Footer Bar
 
     private var footerBar: some View {
         HStack {
             Text("Quick accept: ⌥Tab • Toggle: ⌘⇧G")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
+
             Spacer()
-            if let bundleID = coordinator.currentContext?.bundleID,
-               let appName = coordinator.currentContext?.appName {
+
+            if let bundleID = coordinator.currentContext?.bundleID ?? coordinator.currentContext?.appName {
+                let appName = coordinator.currentContext?.appName ?? "Current App"
                 Menu {
-                    Button("Recheck Now") {
+                    Button("Check Paragraph Now") {
                         if let para = coordinator.currentContext?.activeParagraph {
                             coordinator.triggerImmediateCheck(for: para)
                         }
@@ -461,75 +446,29 @@ public struct FloatingOverlayView: View {
             }
         }
     }
+}
 
-    // MARK: - Hover Peek & Auto-Dismiss Logic
+// MARK: - Unified Wrapper for Previews & Tests
 
-    private func handleBadgeHover(_ hovering: Bool) {
-        isBadgeHovered = hovering
+public struct FloatingOverlayView: View {
+    @ObservedObject var coordinator: WritingAssistantCoordinator
 
-        guard case .issuesFound = coordinator.pillState else {
-            hoverOpenTask?.cancel()
-            hoverOpenTask = nil
-            return
-        }
+    public init(coordinator: WritingAssistantCoordinator) {
+        self.coordinator = coordinator
+    }
 
-        if hovering {
-            // Cancel any pending close
-            hoverCloseTask?.cancel()
-            hoverCloseTask = nil
-
+    public var body: some View {
+        Group {
             if coordinator.isPopoverExpanded {
-                return
-            }
-
-            // Start 1.0s hover timer to peek open the dialog
-            hoverOpenTask?.cancel()
-            hoverOpenTask = Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                guard !Task.isCancelled else { return }
-                guard !coordinator.isPopoverExpanded else { return }
-                guard case .issuesFound = coordinator.pillState else { return }
-                coordinator.openedByHover = true
-                coordinator.isPopoverExpanded = true
-                coordinator.onOverlayStateChanged?()
-            }
-        } else {
-            // Cancel pending open timer if user moved out before 1.0s
-            hoverOpenTask?.cancel()
-            hoverOpenTask = nil
-
-            // If dialog is currently open via hover peek, schedule close after 0.5s
-            if coordinator.isPopoverExpanded && coordinator.openedByHover && !isDialogHovered {
-                scheduleHoverClose(delay: 0.5)
+                FloatingDialogView(coordinator: coordinator)
+            } else {
+                FloatingPillView(coordinator: coordinator)
             }
         }
-    }
-
-    private func handleDialogHover(_ hovering: Bool) {
-        isDialogHovered = hovering
-        if hovering {
-            // User entered the dialog: cancel any pending close
-            hoverCloseTask?.cancel()
-            hoverCloseTask = nil
-        } else {
-            // User moved cursor out of dialog: if opened by hover peek, close after 0.5s
-            if coordinator.isPopoverExpanded && coordinator.openedByHover && !isBadgeHovered {
-                scheduleHoverClose(delay: 0.5)
-            }
-        }
-    }
-
-    private func scheduleHoverClose(delay: Double) {
-        hoverCloseTask?.cancel()
-        hoverCloseTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            guard !Task.isCancelled else { return }
-            guard coordinator.isPopoverExpanded && coordinator.openedByHover else { return }
-            guard !isDialogHovered && !isBadgeHovered else { return }
-            coordinator.isPopoverExpanded = false
-            coordinator.openedByHover = false
-            coordinator.onOverlayStateChanged?()
-        }
+        .frame(
+            width: coordinator.isPopoverExpanded ? 380 : 48,
+            height: coordinator.isPopoverExpanded ? 348 : 48
+        )
     }
 }
 
