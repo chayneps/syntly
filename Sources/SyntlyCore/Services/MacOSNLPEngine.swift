@@ -650,7 +650,7 @@ public enum MacOSNLPEngine {
             }
         }
 
-        // Pass 7: Direct question terminal punctuation ("Can you make sure about that" -> "about that?", "Can you check this." -> "check this?")
+        // Pass 7: Terminal sentence punctuation ("Can you check that" -> "check that?", "Try to think about the way to make some test" -> "some test.")
         let segments = segmentSentences(in: text)
         for segment in segments {
             let segTokenizer = NLTokenizer(unit: .word)
@@ -668,7 +668,7 @@ public enum MacOSNLPEngine {
             guard firstWord.first?.isUppercase == true else { continue }
 
             let opener = "\(firstWord.lowercased()) \(secondWord.lowercased())"
-            guard directQuestionOpeners.contains(opener) else { continue }
+            let isDirectQuestion = directQuestionOpeners.contains(opener)
 
             let lastWordRange = wordRanges[wordRanges.count - 1]
             let secondLastWordRange = wordRanges[wordRanges.count - 2]
@@ -680,7 +680,7 @@ public enum MacOSNLPEngine {
                 : ""
             let trimmedTrailing = trailingSlice.trimmingCharacters(in: .whitespacesAndNewlines)
 
-            if trimmedTrailing == "." {
+            if trimmedTrailing == "." && isDirectQuestion {
                 let nsTrailing = trailingSlice as NSString
                 let dotOffset = nsTrailing.range(of: ".").location
                 if dotOffset != NSNotFound {
@@ -710,12 +710,15 @@ public enum MacOSNLPEngine {
                 let targetRange = NSRange(location: secondLastWordRange.location, length: afterLastWordLoc - secondLastWordRange.location)
                 if !overlapsActiveCaretOrExisting(targetRange) {
                     let origPhrase = nsText.substring(with: targetRange)
+                    let (replacementPunct, explanation): (String, String) = isDirectQuestion
+                        ? ("?", "Add a question mark '?' at the end of the question.")
+                        : (".", "Add a period '.' at the end of the sentence.")
                     issues.append(
                         WritingIssue(
                             original: origPhrase,
-                            replacement: "\(origPhrase)?",
+                            replacement: "\(origPhrase)\(replacementPunct)",
                             category: .correctness,
-                            explanation: "Add a question mark '?' at the end of the question.",
+                            explanation: explanation,
                             utf16Location: targetRange.location,
                             utf16Length: targetRange.length,
                             isLocalSpellcheck: true

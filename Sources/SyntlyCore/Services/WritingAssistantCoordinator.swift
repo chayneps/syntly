@@ -204,12 +204,6 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             return
         }
 
-        // If paragraph hasn't changed and we already have results, keep current state
-        if paragraph == lastAnalyzedParagraph {
-            onOverlayStateChanged?()
-            return
-        }
-
         // 1. Instant local macOS NaturalLanguage + NSSpellChecker pass (<3ms) with active-word caret protection
         let isChromium = AXEngine.isChromiumOrElectronApp(bundleID: ctx.bundleID, appName: ctx.appName)
         let translatedCaretLocation: Int? = {
@@ -229,7 +223,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             .filter { !dismissedOriginals.contains($0.original) }
             .map { Self.offsetIssue($0, by: baseOffset) }
 
-        // Keep still-valid issues from unchanged sentences alive with updated UTF-16 locations while typing
+        // Keep still-valid issues from unchanged sentences alive with updated UTF-16 locations while typing or moving cursor
         let activeWordInFullText = MacOSNLPEngine.activeTypingWordRange(
             in: ctx.fullText,
             caretUTF16Location: translatedCaretLocation
@@ -305,6 +299,12 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         if pillState != newPillState {
             pillState = newPillState
             onOverlayStateChanged?()
+        }
+
+        // If paragraph text hasn't changed (e.g. only caret moved), do not re-run debounced Gemini API call
+        if paragraph == lastAnalyzedParagraph {
+            onOverlayStateChanged?()
+            return
         }
 
         // 2. Schedule debounced Gemini contextual check
@@ -421,7 +421,8 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             onOverlayStateChanged?()
             return
         }
-        _ = axEngine.applyIssueReplacement(issue, in: currentText)
+        let applied = axEngine.applyIssueReplacement(issue, in: currentText)
+        guard applied else { return }
 
         onIssueAccepted?(issue)
 

@@ -716,10 +716,24 @@ public final class AXEngine {
             let candidate = NSRange(location: loc, length: rawRange.length)
             _ = setRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute, range: candidate)
             let actual = readSettledSelectedText(from: element, expectedRange: candidate, isChromium: isChromium)
-            if let actual = actual, Self.typographicallyEqual(actual, expectedOriginal) {
-                return (true, actual)
+            if let actual = actual {
+                if Self.typographicallyEqual(actual, expectedOriginal) {
+                    return (true, actual)
+                }
+                // Fallback for plain-text controls where kAXSelectedTextAttribute is unsupported (returns ""),
+                // but kAXSelectedTextRangeAttribute was verified to match candidate.
+                if actual.isEmpty && listDrifts.isEmpty {
+                    let nsFull = fullText as NSString
+                    if candidate.location + candidate.length <= nsFull.length {
+                        let textAtCandidate = nsFull.substring(with: candidate)
+                        if Self.typographicallyEqual(textAtCandidate, expectedOriginal) {
+                            return (true, textAtCandidate)
+                        }
+                    }
+                }
+                return (false, actual)
             }
-            return (false, actual)
+            return (false, nil)
         }
 
         // 1. Try rawRange first
@@ -730,12 +744,8 @@ public final class AXEngine {
 
         // Plain-text fast path: When there are no bullet points, numbered list markers, or CRLF line breaks
         // prior to `rawRange.location`, UTF-16 offsets in `kAXValueAttribute` and `kAXSelectedTextRangeAttribute`
-        // are identical. Never run overlap shifts or spiral searches on plain text (which would send extra async
-        // selection IPCs into Chromium/Electron and shift the selection).
+        // are identical. If initialAttempt did not match, abort immediately to prevent out-of-order text corruption.
         if listDrifts.isEmpty {
-            if initialAttempt.actualText == nil || initialAttempt.actualText == "" {
-                return rawRange
-            }
             restorePriorSelection()
             return nil
         }
@@ -823,24 +833,32 @@ public final class AXEngine {
             return immediateText
         }
 
-        if let text = immediateText,
-           (text as NSString).length == expectedRange.length,
-           immediateRange == expectedRange {
-            return text
+        if immediateRange == expectedRange {
+            if let text = immediateText, !text.isEmpty {
+                if (text as NSString).length == expectedRange.length {
+                    return text
+                }
+            } else {
+                return ""
+            }
         }
 
         // In Chromium/Electron, setting kAXSelectedTextRangeAttribute dispatches an async IPC to the renderer.
-        // Poll briefly (up to 6 x 4ms = 24ms) for kAXSelectedTextAttribute to reflect the updated selection.
+        // Poll for kAXSelectedTextRangeAttribute to reflect expectedRange (up to 20 x 5ms = 100ms).
         var latestText = immediateText
         var latestRange = immediateRange
-        for _ in 0..<6 {
-            usleep(4_000)
+        for _ in 0..<20 {
+            usleep(5_000)
             latestText = copyStringAttribute(element, attribute: kAXSelectedTextAttribute)
             latestRange = copyRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute)
-            if let text = latestText,
-               (text as NSString).length == expectedRange.length,
-               latestRange == expectedRange {
-                return text
+            if latestRange == expectedRange {
+                if let text = latestText, !text.isEmpty {
+                    if (text as NSString).length == expectedRange.length {
+                        return text
+                    }
+                } else {
+                    return ""
+                }
             }
         }
         // If the element's reported selected range still does not match `expectedRange`, do not return stale text from an earlier range.
@@ -875,6 +893,10 @@ public final class AXEngine {
                 app.activate()
             } else {
                 app.activate(options: .activateIgnoringOtherApps)
+            }
+            for _ in 0..<10 {
+                if app.isActive { break }
+                usleep(10_000)
             }
         }
 
@@ -1149,6 +1171,22 @@ public final class AXEngine {
         // Do NOT call setRangeAttribute again inside this block: firing an async AX selection IPC right before
         // Cmd+V causes the selection IPC in Chromium/Electron to arrive *after* the paste and highlight the pasted text.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.045) {
+            // Verify that the element's reported selection matches calibratedRange before posting Cmd+V
+            if let element = element, let expected = calibratedRange {
+                var currentSel = self.copyRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute)
+                if currentSel != expected {
+                    for _ in 0..<15 {
+                        usleep(5_000)
+                        currentSel = self.copyRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute)
+                        if currentSel == expected { break }
+                    }
+                }
+                guard currentSel == expected else {
+                    self.isApplyingReplacement = false
+                    return
+                }
+            }
+
             let source = CGEventSource(stateID: .combinedSessionState)
             source?.setLocalEventsFilterDuringSuppressionState(
                 [.permitLocalMouseEvents, .permitSystemDefinedEvents],
