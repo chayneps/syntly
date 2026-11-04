@@ -589,6 +589,31 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             }
             remaining.append(item)
         }
+
+        // Re-evaluate local NLP on updated text so sequential Alt-Tab keypresses can immediately fix
+        // terminal question marks, periods, or newly revealed issues without waiting.
+        if let current = currentContext {
+            let freshLocal = geminiService.runLocalSpellcheck(on: current.analysisText, caretUTF16Location: current.selectedRange?.location)
+            for fresh in freshLocal where !dismissedOriginals.contains(fresh.original) {
+                let freshRange = NSRange(
+                    location: fresh.utf16Location ?? 0,
+                    length: fresh.utf16Length ?? (fresh.original as NSString).length
+                )
+                let alreadyPresent = remaining.contains { existing in
+                    let existingRange = NSRange(
+                        location: existing.utf16Location ?? 0,
+                        length: existing.utf16Length ?? (existing.original as NSString).length
+                    )
+                    return NSIntersectionRange(freshRange, existingRange).length > 0
+                        || existing.original == fresh.original
+                }
+                if !alreadyPresent {
+                    remaining.append(fresh)
+                }
+            }
+            remaining.sort { ($0.utf16Location ?? 0) < ($1.utf16Location ?? 0) }
+        }
+
         issues = remaining
 
         if issues.isEmpty {

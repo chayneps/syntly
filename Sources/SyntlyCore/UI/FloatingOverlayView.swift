@@ -40,26 +40,13 @@ public struct FloatingPillView: View {
 
     public var body: some View {
         ZStack(alignment: .topTrailing) {
-            // 1. Center Manga Thought Bubble App Icon
-            Group {
-                if let iconImg = loadAppIconImage() {
-                    Image(nsImage: iconImg)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                } else {
-                    // High-contrast fallback manga thought bubble in bright hot pink
-                    ZStack {
-                        Circle()
-                            .fill(Color(red: 0.996, green: 0.008, blue: 0.890))
-                        Text("S")
-                            .font(.system(size: 20, weight: .heavy, design: .rounded))
-                            .foregroundStyle(.white)
-                    }
-                }
-            }
-            .frame(width: 36, height: 36)
-            .scaleEffect(isHovered ? 1.08 : 1.0)
-            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isHovered)
+            // 1. Authentic Manga Thought Bubble App Icon (36x36)
+            Image(nsImage: StatusBarController.renderMangaBubble(size: 36))
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 36, height: 36)
+                .scaleEffect(isHovered ? 1.08 : 1.0)
+                .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isHovered)
 
             // 2. Status Badge / Spinner
             statusBadgeOverlay
@@ -211,12 +198,10 @@ public struct FloatingDialogView: View {
 
     private var headerBar: some View {
         HStack(alignment: .top, spacing: 8) {
-            if let iconImg = loadAppIconImage() {
-                Image(nsImage: iconImg)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 20, height: 20)
-            }
+            Image(nsImage: StatusBarController.renderMangaBubble(size: 20))
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 20, height: 20)
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {

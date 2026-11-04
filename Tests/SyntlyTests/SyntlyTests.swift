@@ -1391,9 +1391,15 @@ final class SyntlyEndToEndTests: XCTestCase {
     func testLocalNLPPunctuationAndQuestionDetection() {
         // 1. Direct question missing '?' at the end of a multi-sentence input
         let text1 = "I want to make sure the bug is already fixed but not sure it's fixed or not. Can you make sure about that"
-        // While caret is actively touching the end of "that", suppress flagging "about that"
+        // Even when user caret is at the end of the input, the completed question is correctly detected
         let activeIssues = MacOSNLPEngine.analyzeLocally(text: text1, caretUTF16Location: (text1 as NSString).length)
-        XCTAssertTrue(activeIssues.isEmpty, "Should not flag missing '?' while user's caret is actively typing the final word")
+        XCTAssertEqual(activeIssues.first?.original, "about that")
+        XCTAssertEqual(activeIssues.first?.replacement, "about that?")
+
+        // If typing is in-progress with an incomplete word (e.g. "tha"), punctuation is suppressed until word finishes
+        let textUnfinished = "Can you make sure about tha"
+        let unfinishedIssues = MacOSNLPEngine.analyzeLocally(text: textUnfinished, caretUTF16Location: (textUnfinished as NSString).length)
+        XCTAssertFalse(unfinishedIssues.contains { $0.replacement.hasSuffix("?") })
 
         // Once typing settles (caretUTF16Location: nil), flag "about that" -> "about that?"
         let settledIssues = MacOSNLPEngine.analyzeLocally(text: text1, caretUTF16Location: nil)
@@ -1441,16 +1447,10 @@ final class SyntlyEndToEndTests: XCTestCase {
 
         // 6. Complete declarative sentence missing terminal period (.)
         let text7 = "I want to test what's going on but I am not sure what it's gonna be. Try to think about the way to make some test"
-        // Active caret at EOF suppresses period while user is typing
-        let activeIssues7 = MacOSNLPEngine.analyzeLocally(text: text7, caretUTF16Location: (text7 as NSString).length)
-        XCTAssertTrue(activeIssues7.isEmpty, "Should not flag missing period while user is actively typing the final word")
-
-        // Once typing settles, flags 'some test' -> 'some test.'
-        let settledIssues7 = MacOSNLPEngine.analyzeLocally(text: text7, caretUTF16Location: nil)
-        XCTAssertEqual(settledIssues7.count, 1)
-        XCTAssertEqual(settledIssues7.first?.original, "some test")
-        XCTAssertEqual(settledIssues7.first?.replacement, "some test.")
-        XCTAssertEqual(settledIssues7.first?.explanation, "Add a period '.' at the end of the sentence.")
+        let issues7 = MacOSNLPEngine.analyzeLocally(text: text7, caretUTF16Location: (text7 as NSString).length)
+        XCTAssertEqual(issues7.first?.original, "some test")
+        XCTAssertEqual(issues7.first?.replacement, "some test.")
+        XCTAssertEqual(issues7.first?.explanation, "Add a period '.' at the end of the sentence.")
     }
 
     @MainActor
@@ -1594,7 +1594,7 @@ final class SyntlyEndToEndTests: XCTestCase {
     @MainActor
     func testMovingCursorBeforeAcceptNeverCorruptsWord() async throws {
         settings.enableLocalSpellcheck = true
-        let initialText = "Hello this is a tste"
+        let initialText = "Hello this is a tste."
         let mockElectron = SimulatedSlackBulletAXAccessor(axValueText: initialText)
         axEngine.elementAccessor = mockElectron
         axEngine.setTestingFocusedElement(AXUIElementCreateSystemWide())
@@ -1613,7 +1613,7 @@ final class SyntlyEndToEndTests: XCTestCase {
             return (http, Data(responseJSON.utf8))
         }
 
-        // 1. User types "Hello this is a tste" (caret is touching "tste", so it is protected while actively typing)
+        // 1. User types "Hello this is a tste."
         coordinator.axEngineDidUpdateContext(
             FocusedTextContext(
                 appName: "Antigravity",
@@ -1624,7 +1624,6 @@ final class SyntlyEndToEndTests: XCTestCase {
                 selectedRange: NSRange(location: (initialText as NSString).length, length: 0)
             )
         )
-        XCTAssertTrue(coordinator.issues.isEmpty, "Active typing word is protected while caret is touching it")
 
         // 2. User moves cursor elsewhere (e.g. index 5, before "this"). "tste" is now settled!
         mockElectron.selectedRangeInDOM = NSRange(location: 5, length: 0)
@@ -1649,8 +1648,8 @@ final class SyntlyEndToEndTests: XCTestCase {
         // 3. User clicks Accept on the suggestion card
         coordinator.acceptIssue(coordinator.issues[0])
 
-        // Must cleanly replace "tste" with "test" -> "Hello this is a test" (NEVER "teste" or corrupted offset)
-        XCTAssertEqual(mockElectron.axValueText, "Hello this is a test")
+        // Must cleanly replace "tste" with "test" -> "Hello this is a test." (NEVER "teste" or corrupted offset)
+        XCTAssertEqual(mockElectron.axValueText, "Hello this is a test.")
         XCTAssertTrue(coordinator.issues.isEmpty)
         XCTAssertEqual(coordinator.pillState, PillVisualState.allClear)
     }

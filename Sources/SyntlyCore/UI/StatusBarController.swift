@@ -169,6 +169,10 @@ public final class StatusBarController: NSObject {
         let pinkColor = NSColor(calibratedRed: 0.996, green: 0.008, blue: 0.890, alpha: 1.0)
         pinkColor.setFill()
 
+        // Scale proportionally from base 18pt canvas to requested ptSize
+        let scale = ptSize / 18.0
+        cg.scaleBy(x: scale, y: scale)
+
         let center = CGPoint(x: 8.5, y: 9.5)
         let mainRadius: CGFloat = 6.2
 

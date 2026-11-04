@@ -587,6 +587,85 @@ public enum MacOSNLPEngine {
             }
         }
 
+        // 5e. High-frequency spoken and grammar patterns (e.g., "It seem" -> "It seems", "what going on" -> "what's going on", "is already fix" -> "is already fixed")
+        if let subjVerbRegex = try? NSRegularExpression(pattern: #"\b(It|He|She|This|That)[ \t]+(seem|appear|look|feel|sound)\b"#, options: []) {
+            let matches = subjVerbRegex.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length))
+            for match in matches {
+                let fullRange = match.range
+                let subjRange = match.range(at: 1)
+                let verbRange = match.range(at: 2)
+                guard fullRange.location != NSNotFound, !overlapsActiveCaretOrExisting(fullRange) else { continue }
+                let subj = nsText.substring(with: subjRange)
+                let verb = nsText.substring(with: verbRange)
+                let orig = nsText.substring(with: fullRange)
+                let repl = "\(subj) \(verb)s"
+                issues.append(
+                    WritingIssue(
+                        original: orig,
+                        replacement: repl,
+                        category: .correctness,
+                        explanation: "Subject-verb agreement: use '\(subj) \(verb)s'.",
+                        utf16Location: fullRange.location,
+                        utf16Length: fullRange.length,
+                        isLocalSpellcheck: true
+                    )
+                )
+                coveredRanges.append(fullRange)
+            }
+        }
+
+        if let passiveFixRegex = try? NSRegularExpression(pattern: #"\b(is|was|are|were)[ \t]+((?:already[ \t]+)?fix)\b"#, options: [.caseInsensitive]) {
+            let matches = passiveFixRegex.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length))
+            for match in matches {
+                let fullRange = match.range
+                let beRange = match.range(at: 1)
+                let fixPartRange = match.range(at: 2)
+                guard fullRange.location != NSNotFound, !overlapsActiveCaretOrExisting(fullRange) else { continue }
+                let beWord = nsText.substring(with: beRange)
+                let fixPart = nsText.substring(with: fixPartRange)
+                let orig = nsText.substring(with: fullRange)
+                let repl = fixPart.lowercased().contains("already") ? "\(beWord) already fixed" : "\(beWord) fixed"
+                issues.append(
+                    WritingIssue(
+                        original: orig,
+                        replacement: repl,
+                        category: .correctness,
+                        explanation: "Use past participle 'fixed'.",
+                        utf16Location: fullRange.location,
+                        utf16Length: fullRange.length,
+                        isLocalSpellcheck: true
+                    )
+                )
+                coveredRanges.append(fullRange)
+            }
+        }
+
+        if let whatGoingRegex = try? NSRegularExpression(pattern: #"\b(what|who|where|how)[ \t]+going[ \t]+on\b"#, options: [.caseInsensitive]) {
+            let matches = whatGoingRegex.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length))
+            for match in matches {
+                let fullRange = match.range
+                let whRange = match.range(at: 1)
+                guard fullRange.location != NSNotFound, !overlapsActiveCaretOrExisting(fullRange) else { continue }
+                let wh = nsText.substring(with: whRange)
+                let orig = nsText.substring(with: fullRange)
+                let isCap = wh.first?.isUppercase == true
+                let prefix = isCap ? (wh.prefix(1).uppercased() + wh.dropFirst().lowercased()) : wh.lowercased()
+                let repl = "\(prefix)'s going on"
+                issues.append(
+                    WritingIssue(
+                        original: orig,
+                        replacement: repl,
+                        category: .correctness,
+                        explanation: "Add missing contraction: '\(repl)'.",
+                        utf16Location: fullRange.location,
+                        utf16Length: fullRange.length,
+                        isLocalSpellcheck: true
+                    )
+                )
+                coveredRanges.append(fullRange)
+            }
+        }
+
         // Pass 6: NSSpellChecker with contextual correction, entity immunity, and active-caret protection
         var searchOffset = 0
 
@@ -662,13 +741,15 @@ public enum MacOSNLPEngine {
                 return true
             }
 
-            guard wordRanges.count >= 4 else { continue }
+            guard wordRanges.count >= 2 else { continue }
             let firstWord = nsText.substring(with: wordRanges[0])
             let secondWord = nsText.substring(with: wordRanges[1])
             guard firstWord.first?.isUppercase == true else { continue }
 
             let opener = "\(firstWord.lowercased()) \(secondWord.lowercased())"
             let isDirectQuestion = directQuestionOpeners.contains(opener)
+            let minWords = isDirectQuestion ? 3 : 4
+            guard wordRanges.count >= minWords else { continue }
 
             let lastWordRange = wordRanges[wordRanges.count - 1]
             let secondLastWordRange = wordRanges[wordRanges.count - 2]
@@ -686,7 +767,8 @@ public enum MacOSNLPEngine {
                 if dotOffset != NSNotFound {
                     let fullEndLoc = afterLastWordLoc + dotOffset + 1
                     let targetRange = NSRange(location: secondLastWordRange.location, length: fullEndLoc - secondLastWordRange.location)
-                    if !overlapsActiveCaretOrExisting(targetRange) {
+                    let alreadyCovered = coveredRanges.contains { NSIntersectionRange($0, targetRange).length > 0 }
+                    if !alreadyCovered {
                         let origWithDot = nsText.substring(with: targetRange)
                         let origWordsOnly = nsText.substring(with: NSRange(location: secondLastWordRange.location, length: afterLastWordLoc - secondLastWordRange.location))
                         issues.append(
@@ -704,11 +786,18 @@ public enum MacOSNLPEngine {
                     }
                 }
             } else if trimmedTrailing.isEmpty {
-                let lastWordLower = nsText.substring(with: lastWordRange).lowercased()
+                let lastWord = nsText.substring(with: lastWordRange)
+                let lastWordLower = lastWord.lowercased()
                 guard !danglingTrailingWords.contains(lastWordLower) else { continue }
 
+                // If last word is misspelled, let spellchecker flag it first
+                if checker.checkSpelling(of: lastWord, startingAt: 0, language: checker.language(), wrap: false, inSpellDocumentWithTag: 0, wordCount: nil).location != NSNotFound {
+                    continue
+                }
+
                 let targetRange = NSRange(location: secondLastWordRange.location, length: afterLastWordLoc - secondLastWordRange.location)
-                if !overlapsActiveCaretOrExisting(targetRange) {
+                let alreadyCovered = coveredRanges.contains { NSIntersectionRange($0, targetRange).length > 0 }
+                if !alreadyCovered {
                     let origPhrase = nsText.substring(with: targetRange)
                     let (replacementPunct, explanation): (String, String) = isDirectQuestion
                         ? ("?", "Add a question mark '?' at the end of the question.")
