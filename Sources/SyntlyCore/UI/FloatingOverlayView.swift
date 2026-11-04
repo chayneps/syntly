@@ -5,6 +5,10 @@ public struct FloatingOverlayView: View {
     @State private var selectedTab: OverlayTab = .suggestions
     @State private var isHovered: Bool = false
     @State private var hasPushedCursor: Bool = false
+    @State private var isBadgeHovered: Bool = false
+    @State private var isDialogHovered: Bool = false
+    @State private var hoverOpenTask: Task<Void, Never>? = nil
+    @State private var hoverCloseTask: Task<Void, Never>? = nil
 
     public enum OverlayTab: String, CaseIterable {
         case suggestions = "Suggestions"
@@ -27,6 +31,25 @@ public struct FloatingOverlayView: View {
             width: coordinator.isPopoverExpanded ? 380 : 48,
             height: coordinator.isPopoverExpanded ? 348 : 48
         )
+        .onChange(of: coordinator.isPopoverExpanded) { _, isExpanded in
+            if !isExpanded {
+                coordinator.openedByHover = false
+                hoverOpenTask?.cancel()
+                hoverOpenTask = nil
+                hoverCloseTask?.cancel()
+                hoverCloseTask = nil
+                isBadgeHovered = false
+                isDialogHovered = false
+            }
+        }
+        .onChange(of: coordinator.pillState) { _, newState in
+            if case .issuesFound = newState {
+                // Keep active
+            } else {
+                hoverOpenTask?.cancel()
+                hoverOpenTask = nil
+            }
+        }
     }
 
     // MARK: - Compact Top-Left Floating Icon (Manga Thought Bubble)
@@ -108,15 +131,25 @@ public struct FloatingOverlayView: View {
                 .offset(x: 6, y: -5)
 
         case .issuesFound(let count, let topCategory):
-            Text("\(count)")
-                .font(.system(size: 10, weight: .heavy, design: .rounded))
-                .foregroundStyle(.white)
-                .frame(minWidth: 16, minHeight: 16)
-                .padding(.horizontal, 3)
-                .background(topCategory.badgeColor, in: Capsule())
-                .overlay(Capsule().strokeBorder(.white, lineWidth: 1.5))
-                .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
-                .offset(x: 5, y: -5)
+            ZStack(alignment: .topTrailing) {
+                Text("\(count)")
+                    .font(.system(size: 10, weight: .heavy, design: .rounded))
+                    .foregroundStyle(.white)
+                    .frame(minWidth: 16, minHeight: 16)
+                    .padding(.horizontal, 3)
+                    .background(topCategory.badgeColor, in: Capsule())
+                    .overlay(Capsule().strokeBorder(.white, lineWidth: 1.5))
+                    .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+                    .scaleEffect(isBadgeHovered ? 1.15 : 1.0)
+                    .animation(.spring(response: 0.2, dampingFraction: 0.7), value: isBadgeHovered)
+                    .offset(x: 5, y: -5)
+            }
+            .frame(width: 26, height: 26, alignment: .topTrailing)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                handleBadgeHover(hovering)
+            }
+            .help("Hover 1s to peek • Click to view")
 
         case .paused:
             Image(systemName: "pause.circle.fill")
@@ -187,6 +220,15 @@ public struct FloatingOverlayView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.14), lineWidth: 1)
         )
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .onHover { hovering in
+            handleDialogHover(hovering)
+        }
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                coordinator.openedByHover = false
+            }
+        )
     }
 
     private var headerBar: some View {
@@ -242,6 +284,7 @@ public struct FloatingOverlayView: View {
             }
 
             Button {
+                coordinator.openedByHover = false
                 coordinator.isPopoverExpanded = false
                 coordinator.onOverlayStateChanged?()
             } label: {
@@ -416,6 +459,76 @@ public struct FloatingOverlayView: View {
                 .menuStyle(.borderlessButton)
                 .frame(width: 22)
             }
+        }
+    }
+
+    // MARK: - Hover Peek & Auto-Dismiss Logic
+
+    private func handleBadgeHover(_ hovering: Bool) {
+        isBadgeHovered = hovering
+
+        guard case .issuesFound = coordinator.pillState else {
+            hoverOpenTask?.cancel()
+            hoverOpenTask = nil
+            return
+        }
+
+        if hovering {
+            // Cancel any pending close
+            hoverCloseTask?.cancel()
+            hoverCloseTask = nil
+
+            if coordinator.isPopoverExpanded {
+                return
+            }
+
+            // Start 1.0s hover timer to peek open the dialog
+            hoverOpenTask?.cancel()
+            hoverOpenTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                guard !coordinator.isPopoverExpanded else { return }
+                guard case .issuesFound = coordinator.pillState else { return }
+                coordinator.openedByHover = true
+                coordinator.isPopoverExpanded = true
+                coordinator.onOverlayStateChanged?()
+            }
+        } else {
+            // Cancel pending open timer if user moved out before 1.0s
+            hoverOpenTask?.cancel()
+            hoverOpenTask = nil
+
+            // If dialog is currently open via hover peek, schedule close after 0.5s
+            if coordinator.isPopoverExpanded && coordinator.openedByHover && !isDialogHovered {
+                scheduleHoverClose(delay: 0.5)
+            }
+        }
+    }
+
+    private func handleDialogHover(_ hovering: Bool) {
+        isDialogHovered = hovering
+        if hovering {
+            // User entered the dialog: cancel any pending close
+            hoverCloseTask?.cancel()
+            hoverCloseTask = nil
+        } else {
+            // User moved cursor out of dialog: if opened by hover peek, close after 0.5s
+            if coordinator.isPopoverExpanded && coordinator.openedByHover && !isBadgeHovered {
+                scheduleHoverClose(delay: 0.5)
+            }
+        }
+    }
+
+    private func scheduleHoverClose(delay: Double) {
+        hoverCloseTask?.cancel()
+        hoverCloseTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            guard coordinator.isPopoverExpanded && coordinator.openedByHover else { return }
+            guard !isDialogHovered && !isBadgeHovered else { return }
+            coordinator.isPopoverExpanded = false
+            coordinator.openedByHover = false
+            coordinator.onOverlayStateChanged?()
         }
     }
 }

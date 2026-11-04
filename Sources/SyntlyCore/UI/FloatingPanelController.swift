@@ -15,6 +15,7 @@ public final class NonActivatingPanel: NSPanel {
     public var onPillDragEnded: ((CGPoint) -> Void)?
     public var onDialogDragEnded: ((CGPoint) -> Void)?
     public var onPillSingleClick: (() -> Void)?
+    public var onDialogClicked: (() -> Void)?
     public var onPanelDoubleClick: (() -> Void)?
     public var onPillRightClick: ((NSEvent) -> Void)?
 
@@ -68,6 +69,7 @@ public final class NonActivatingPanel: NSPanel {
             isDraggingPill = false
 
             if isExpanded {
+                onDialogClicked?()
                 // When expanded: Allow dragging if click began in header bar (top 48pt) or footer bar (bottom 38pt)
                 let inFooter = localPoint.y <= 38
                 isDragCandidate = inHeader || inFooter
@@ -210,8 +212,13 @@ public final class FloatingPanelController: NSObject {
 
         newPanel.onPillSingleClick = { [weak self] in
             guard let self = self else { return }
+            self.coordinator.openedByHover = false
             self.coordinator.isPopoverExpanded = true
             self.coordinator.onOverlayStateChanged?()
+        }
+
+        newPanel.onDialogClicked = { [weak self] in
+            self?.coordinator.openedByHover = false
         }
 
         newPanel.onPanelDoubleClick = { [weak self] in

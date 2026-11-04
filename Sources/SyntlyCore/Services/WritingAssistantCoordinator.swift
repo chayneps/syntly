@@ -13,6 +13,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
     @Published public var isPopoverExpanded: Bool = false
     @Published public var isRewriteTabActive: Bool = false
     @Published public var isRewriting: Bool = false
+    @Published public var openedByHover: Bool = false
     @Published public var rewrittenPreview: String?
     @Published public var customRewritePrompt: String = ""
     @Published public private(set) var lastErrorMessage: String?
@@ -109,14 +110,18 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         }
 
         hotkeyMonitor.onToggleRewritePanelShortcut = { [weak self] in
-            guard let self = self else { return }
-            self.axEngine.pollCurrentFocusedElement()
-            self.isPopoverExpanded.toggle()
-            if self.isPopoverExpanded, let ctx = self.currentContext {
-                self.triggerImmediateCheck(for: ctx.analysisText, baseOffset: ctx.analysisRange.location)
-            }
-            self.onOverlayStateChanged?()
+            self?.togglePopover()
         }
+    }
+
+    public func togglePopover() {
+        openedByHover = false
+        axEngine.pollCurrentFocusedElement()
+        isPopoverExpanded.toggle()
+        if isPopoverExpanded, let ctx = currentContext {
+            triggerImmediateCheck(for: ctx.analysisText, baseOffset: ctx.analysisRange.location)
+        }
+        onOverlayStateChanged?()
     }
 
     private static func offsetIssue(_ issue: WritingIssue, by baseOffset: Int) -> WritingIssue {
@@ -417,6 +422,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             updatePillStateFromIssues()
             if issues.isEmpty && isPopoverExpanded {
                 isPopoverExpanded = false
+                openedByHover = false
             }
             onOverlayStateChanged?()
             return
@@ -470,6 +476,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             pillState = .allClear
             if isPopoverExpanded {
                 isPopoverExpanded = false
+                openedByHover = false
             }
         } else {
             updatePillStateFromIssues()
@@ -483,6 +490,11 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         lastAnalyzedParagraph = ""
 
         guard var workingText = currentContext?.fullText ?? (lastAnalyzedParagraph.isEmpty ? nil : lastAnalyzedParagraph) else {
+            issues = []
+            pillState = .allClear
+            isPopoverExpanded = false
+            openedByHover = false
+            onOverlayStateChanged?()
             return
         }
         let accepted = self.issues
@@ -514,6 +526,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         issues = []
         pillState = .allClear
         isPopoverExpanded = false
+        openedByHover = false
         onOverlayStateChanged?()
 
         onAllIssuesAccepted?(accepted, workingText)

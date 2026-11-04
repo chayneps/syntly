@@ -425,6 +425,46 @@ final class SyntlyUnitTests: XCTestCase {
         XCTAssertTrue(resolved.isEmpty, "resolveIssues must reject 'tst' when text contains 'tste'")
     }
 
+    @MainActor
+    func testHoverPeekStateAndAutoDismissFlags() {
+        let coordinator = WritingAssistantCoordinator()
+        XCTAssertFalse(coordinator.openedByHover)
+        XCTAssertFalse(coordinator.isPopoverExpanded)
+
+        // 1. Hover peek activates dialog
+        coordinator.openedByHover = true
+        coordinator.isPopoverExpanded = true
+        XCTAssertTrue(coordinator.openedByHover)
+        XCTAssertTrue(coordinator.isPopoverExpanded)
+
+        // 2. User clicks on the pill/dialog to pin it -> openedByHover must clear so it won't auto-close on mouseout
+        coordinator.openedByHover = false
+        XCTAssertFalse(coordinator.openedByHover)
+        XCTAssertTrue(coordinator.isPopoverExpanded)
+
+        // 3. Re-enter hover peek mode and test acceptAllIssues clears openedByHover
+        coordinator.openedByHover = true
+        coordinator.acceptAllIssues()
+        XCTAssertFalse(coordinator.openedByHover)
+        XCTAssertFalse(coordinator.isPopoverExpanded)
+
+        // 4. Test single issue acceptance resets hover state upon clearing:
+        let issue1 = WritingIssue(original: "foo", replacement: "bar", category: .correctness, explanation: "e1")
+        coordinator.openedByHover = true
+        coordinator.isPopoverExpanded = true
+        coordinator.acceptIssue(issue1)
+        // With 0 remaining in empty context, acceptIssue clears it:
+        XCTAssertFalse(coordinator.openedByHover)
+        XCTAssertFalse(coordinator.isPopoverExpanded)
+
+        // 5. Hotkey toggle clears openedByHover:
+        coordinator.openedByHover = true
+        coordinator.isPopoverExpanded = true
+        coordinator.togglePopover()
+        XCTAssertFalse(coordinator.openedByHover)
+        XCTAssertFalse(coordinator.isPopoverExpanded)
+    }
+
     func testSentenceSegmentationAndIncrementalSentenceCacheWhileTyping() {
         let settings = AppSettings()
         let service = GeminiService(settings: settings)
