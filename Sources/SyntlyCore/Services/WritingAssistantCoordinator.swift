@@ -32,6 +32,8 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
     private var lastAnalyzedParagraph: String = ""
 
     public var onOverlayStateChanged: (() -> Void)?
+    public var onOpenWritingPad: (() -> Void)?
+    @Published public var incomingWritingPadText: String? = nil
 
     public init(
         axEngine: AXEngine = .shared,
@@ -127,6 +129,33 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             triggerImmediateCheck(for: ctx.analysisText, baseOffset: ctx.analysisRange.location)
         }
         onOverlayStateChanged?()
+    }
+
+    public func openWritingPadToRewrite() {
+        let textToBring: String
+        if let current = currentContext {
+            if let sel = current.selectedText, !sel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                textToBring = sel
+            } else if !current.activeParagraph.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                textToBring = current.activeParagraph
+            } else {
+                textToBring = current.fullText
+            }
+        } else if !lastAnalyzedParagraph.isEmpty {
+            textToBring = lastAnalyzedParagraph
+        } else {
+            textToBring = ""
+        }
+
+        if !textToBring.isEmpty {
+            self.incomingWritingPadText = textToBring
+        }
+
+        cancelHoverTimers()
+        isPopoverExpanded = false
+        onOverlayStateChanged?()
+
+        onOpenWritingPad?()
     }
 
     // MARK: - Hover Peek & Auto-Dismiss Logic

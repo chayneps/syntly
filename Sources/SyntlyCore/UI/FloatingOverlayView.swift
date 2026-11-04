@@ -2,7 +2,7 @@ import SwiftUI
 
 public enum OverlayTab: String, CaseIterable {
     case suggestions = "Suggestions"
-    case rewrite = "Rewrite"
+    case openWritingPad = "Open writing pad to rewrite"
 }
 
 // MARK: - App Icon Loader
@@ -175,14 +175,18 @@ public struct FloatingDialogView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .onChange(of: selectedTab) { _, newTab in
-                coordinator.isRewriteTabActive = (newTab == .rewrite)
-                coordinator.onOverlayStateChanged?()
+                if newTab == .openWritingPad {
+                    coordinator.openWritingPadToRewrite()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        selectedTab = .suggestions
+                    }
+                }
             }
 
             if selectedTab == .suggestions {
                 suggestionsListContent
             } else {
-                rewriteTabContent
+                openWritingPadTabContent
             }
 
             footerBar
@@ -226,14 +230,12 @@ public struct FloatingDialogView: View {
                     }
                 }
 
-                // Show model name for when you type (or rewrite)
+                // Show model name for when you type
                 HStack(spacing: 4) {
-                    Image(systemName: selectedTab == .suggestions ? "bolt.fill" : "wand.and.stars")
+                    Image(systemName: "bolt.fill")
                         .font(.system(size: 9))
-                        .foregroundStyle(selectedTab == .suggestions ? .blue : .purple)
-                    Text(selectedTab == .suggestions
-                         ? "Type Model: \(coordinator.settings.liveModel)"
-                         : "Rewrite Model: \(coordinator.settings.rewriteModel.isEmpty ? coordinator.settings.liveModel : coordinator.settings.rewriteModel)")
+                        .foregroundStyle(.blue)
+                    Text("Type Model: \(coordinator.settings.liveModel)")
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                 }
                 .foregroundStyle(.secondary)
@@ -304,6 +306,17 @@ public struct FloatingDialogView: View {
                         .multilineTextAlignment(.center)
                         .padding(.top, 4)
                 }
+
+                Button {
+                    coordinator.openWritingPadToRewrite()
+                } label: {
+                    Label("Open writing pad to rewrite", systemImage: "arrow.up.forward.app")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .padding(.top, 6)
+
                 Spacer()
             }
             .frame(maxWidth: .infinity)
@@ -318,94 +331,59 @@ public struct FloatingDialogView: View {
                             onAddToDictionary: { coordinator.addIssueWordToDictionary(issue) }
                         )
                     }
+
+                    Button {
+                        coordinator.openWritingPadToRewrite()
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "arrow.up.forward.app")
+                            Text("Open writing pad to rewrite")
+                        }
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.purple)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 4)
                 }
             }
         }
     }
 
-    // MARK: - Rewrite Tab
+    // MARK: - Open Writing Pad to Rewrite Tab
 
-    private var rewriteTabContent: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(RewritePreset.allCases) { preset in
-                        Button {
-                            coordinator.runRewritePreset(preset)
-                        } label: {
-                            Label(preset.title, systemImage: preset.iconName)
-                                .font(.system(size: 11, weight: .medium))
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-                }
+    private var openWritingPadTabContent: some View {
+        VStack(spacing: 14) {
+            Spacer()
+
+            Image(systemName: "wand.and.stars")
+                .font(.system(size: 32))
+                .foregroundStyle(.purple)
+
+            Text("Rewrite in Writing Pad")
+                .font(.system(size: 14, weight: .semibold))
+
+            Text("The check-while-you-type popup is designed for quick spelling & grammar fixes. Use Writing Pad to rewrite paragraphs with custom presets, tones, and formatting.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 20)
+
+            Button {
+                coordinator.openWritingPadToRewrite()
+            } label: {
+                Label("Open writing pad to rewrite", systemImage: "arrow.up.forward.app")
+                    .font(.system(size: 12, weight: .semibold))
+                    .padding(.horizontal, 4)
             }
+            .buttonStyle(.borderedProminent)
+            .tint(.purple)
+            .controlSize(.regular)
 
-            HStack(spacing: 6) {
-                TextField("Custom instruction (e.g. 'make bullet points')", text: $coordinator.customRewritePrompt)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12))
-                Button("Run") {
-                    coordinator.runRewritePreset(.fixGrammar, customPrompt: coordinator.customRewritePrompt)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .disabled(coordinator.customRewritePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-
-            if coordinator.isRewriting {
-                VStack {
-                    Spacer()
-                    ProgressView("Rewriting…")
-                        .font(.caption)
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity)
-            } else if let preview = coordinator.rewrittenPreview {
-                VStack(alignment: .leading, spacing: 6) {
-                    ScrollView {
-                        Text(preview)
-                            .font(.system(size: 12))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(8)
-                            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-                    }
-                    .frame(maxHeight: 140)
-
-                    HStack {
-                        Button("Replace in App") {
-                            coordinator.applyRewrittenPreview()
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-
-                        Button("Copy") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(preview, forType: .string)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-
-                        Spacer()
-                    }
-                }
-            } else {
-                VStack(spacing: 6) {
-                    Spacer()
-                    Image(systemName: "wand.and.stars")
-                        .font(.system(size: 24))
-                        .foregroundStyle(.purple)
-                    Text("Select a preset above to rewrite your current paragraph")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity)
-            }
+            Spacer()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Footer Bar
@@ -421,6 +399,9 @@ public struct FloatingDialogView: View {
             if let bundleID = coordinator.currentContext?.bundleID ?? coordinator.currentContext?.appName {
                 let appName = coordinator.currentContext?.appName ?? "Current App"
                 Menu {
+                    Button("Open Writing Pad to Rewrite") {
+                        coordinator.openWritingPadToRewrite()
+                    }
                     Button("Check Paragraph Now") {
                         if let para = coordinator.currentContext?.activeParagraph {
                             coordinator.triggerImmediateCheck(for: para)

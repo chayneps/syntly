@@ -465,6 +465,48 @@ final class SyntlyUnitTests: XCTestCase {
         XCTAssertFalse(coordinator.isPopoverExpanded)
     }
 
+    @MainActor
+    func testOpenWritingPadToRewriteExtractsContextAndClosesPopover() {
+        let coordinator = WritingAssistantCoordinator()
+        var openedPadCalled = false
+        coordinator.onOpenWritingPad = {
+            openedPadCalled = true
+        }
+
+        // Simulate context with active text
+        let context = FocusedTextContext(
+            appName: "Slack",
+            bundleID: "com.tinyspeck.slackmacgap",
+            pid: 1234,
+            fullText: "Here is a full paragraph to rewrite in Writing Pad.",
+            selectedText: "full paragraph to rewrite",
+            selectedRange: NSRange(location: 10, length: 25),
+            anchorAppKitPoint: CGPoint(x: 200, y: 300)
+        )
+        coordinator.axEngineDidUpdateContext(context)
+        coordinator.isPopoverExpanded = true
+
+        coordinator.openWritingPadToRewrite()
+
+        XCTAssertTrue(openedPadCalled)
+        XCTAssertFalse(coordinator.isPopoverExpanded, "Floating dialog must close when opening Writing Pad to rewrite")
+        XCTAssertEqual(coordinator.incomingWritingPadText, "full paragraph to rewrite", "Selected text takes priority to bring to Writing Pad")
+
+        // Test without selection: falls back to activeParagraph/fullText
+        let contextNoSelection = FocusedTextContext(
+            appName: "Slack",
+            bundleID: "com.tinyspeck.slackmacgap",
+            pid: 1234,
+            fullText: "Single active line of text.",
+            selectedText: nil,
+            selectedRange: NSRange(location: 0, length: 0),
+            anchorAppKitPoint: CGPoint(x: 200, y: 300)
+        )
+        coordinator.axEngineDidUpdateContext(contextNoSelection)
+        coordinator.openWritingPadToRewrite()
+        XCTAssertEqual(coordinator.incomingWritingPadText, "Single active line of text.")
+    }
+
     func testSentenceSegmentationAndIncrementalSentenceCacheWhileTyping() {
         let settings = AppSettings()
         let service = GeminiService(settings: settings)

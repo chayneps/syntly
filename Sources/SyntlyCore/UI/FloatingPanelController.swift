@@ -589,7 +589,7 @@ public final class FloatingPanelController: NSObject {
     }
 
     @objc private func handleOpenWritingPad(_ sender: Any?) {
-        onOpenWritingPad?()
+        coordinator.openWritingPadToRewrite()
     }
 
     @objc private func handleOpenSettings(_ sender: Any?) {
