@@ -30,6 +30,8 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
     private var hoverCloseTask: Task<Void, Never>?
     private var dismissedOriginals = Set<String>()
     private var lastAnalyzedParagraph: String = ""
+    private var lastReplacementTime: Date?
+    private var lastAcceptedReplacement: String = ""
 
     public var onOverlayStateChanged: (() -> Void)?
     public var onOpenWritingPad: (() -> Void)?
@@ -283,6 +285,16 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             return
         }
 
+        if let lastRep = lastReplacementTime, Date().timeIntervalSince(lastRep) < 0.4 {
+            // Within 400ms of accepting an issue, if the element's reported text does not contain
+            // the replacement text that was just applied, ignore this stale AX notification to prevent reverting memory state.
+            if let current = currentContext, ctx.fullText != current.fullText {
+                if !lastAcceptedReplacement.isEmpty && !ctx.fullText.contains(lastAcceptedReplacement) {
+                    return
+                }
+            }
+        }
+
         let previousApp = currentContext?.bundleID
         currentContext = ctx
 
@@ -383,7 +395,10 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             )
             guard liveRange.location != NSNotFound else { continue }
             if let active = activeWordInFullText, NSIntersectionRange(active, liveRange).length > 0 {
-                continue
+                let isTerminalPunctuation = candidate.replacement.hasSuffix(".") || candidate.replacement.hasSuffix("?") || candidate.replacement.hasSuffix("!")
+                if !isTerminalPunctuation {
+                    continue
+                }
             }
             candidate.utf16Location = liveRange.location
             candidate.utf16Length = liveRange.length
@@ -421,7 +436,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
                 topCategory: provisionalIssues.first?.category ?? .correctness
             )
         } else {
-            newPillState = .checking
+            newPillState = (paragraph == lastAnalyzedParagraph) ? .allClear : .checking
         }
 
         if pillState != newPillState {
@@ -431,6 +446,11 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
 
         // If paragraph text hasn't changed (e.g. only caret moved), do not re-run debounced Gemini API call
         if paragraph == lastAnalyzedParagraph {
+            if provisionalIssues.isEmpty {
+                pillState = .allClear
+            } else {
+                updatePillStateFromIssues()
+            }
             onOverlayStateChanged?()
             return
         }
@@ -460,6 +480,15 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         }
     }
 
+    private func resetPillStateAfterCancellation() {
+        if self.issues.isEmpty {
+            self.pillState = .allClear
+        } else {
+            self.updatePillStateFromIssues()
+        }
+        self.onOverlayStateChanged?()
+    }
+
     private func performProofread(on text: String, localPreIssues: [WritingIssue], baseOffset: Int = 0) async {
         // Re-run local NLP & spellcheck with `caretUTF16Location: nil` now that the user has paused typing
         // for the debounce interval, so sentence-final words and missing question marks at the caret are detected.
@@ -468,9 +497,25 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             .map { Self.offsetIssue($0, by: baseOffset) }
 
         do {
-            let aiIssues = try await geminiService.proofread(text: text)
-            guard !Task.isCancelled else { return }
+            let aiIssues = try await withThrowingTaskGroup(of: [WritingIssue].self) { group in
+                group.addTask {
+                    try await self.geminiService.proofread(text: text)
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 5_000_000_000)
+                    throw LLMServiceError.timeout
+                }
+                let first = try await group.next()!
+                group.cancelAll()
+                return first
+            }
+
+            guard !Task.isCancelled else {
+                self.resetPillStateAfterCancellation()
+                return
+            }
             if let currentAnalysis = currentContext?.analysisText, currentAnalysis != text {
+                self.resetPillStateAfterCancellation()
                 return
             }
 
@@ -509,14 +554,17 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             }
             self.onOverlayStateChanged?()
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else {
+                self.resetPillStateAfterCancellation()
+                return
+            }
             self.lastErrorMessage = error.localizedDescription
             let fallbackLocal = settledLocalIssues.isEmpty ? localPreIssues : settledLocalIssues
             if !fallbackLocal.isEmpty {
                 self.issues = fallbackLocal
                 self.pillState = .issuesFound(count: fallbackLocal.count, topCategory: .correctness)
             } else {
-                self.pillState = .error(message: error.localizedDescription)
+                self.pillState = .allClear
             }
             self.onOverlayStateChanged?()
         }
@@ -532,6 +580,8 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         debounceTask?.cancel()
         dismissedOriginals.insert(issue.original)
         geminiService.clearCache()
+        lastReplacementTime = Date()
+        lastAcceptedReplacement = issue.replacement
 
         let currentText = currentContext?.fullText ?? lastAnalyzedParagraph
         let matchedRange = AXEngine.findBestOccurrenceRange(
@@ -597,7 +647,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         // Re-evaluate local NLP on updated text so sequential Alt-Tab keypresses can immediately fix
         // terminal question marks, periods, or newly revealed issues without waiting.
         if let current = currentContext {
-            let freshLocal = geminiService.runLocalSpellcheck(on: current.analysisText, caretUTF16Location: current.selectedRange?.location)
+            let freshLocal = geminiService.runLocalSpellcheck(on: current.analysisText, caretUTF16Location: nil)
             for fresh in freshLocal where !dismissedOriginals.contains(fresh.original) {
                 let freshRange = NSRange(
                     location: fresh.utf16Location ?? 0,

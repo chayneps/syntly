@@ -177,6 +177,11 @@ public enum MacOSNLPEngine {
     ]
 
     private static let commonContractionTypos: [String: String] = [
+        "lets": "let's",
+        "thats": "that's",
+        "whats": "what's",
+        "theres": "there's",
+        "heres": "here's",
         "dont": "don't",
         "cant": "can't",
         "wont": "won't",
@@ -657,6 +662,36 @@ public enum MacOSNLPEngine {
                         replacement: repl,
                         category: .correctness,
                         explanation: "Add missing contraction: '\(repl)'.",
+                        utf16Location: fullRange.location,
+                        utf16Length: fullRange.length,
+                        isLocalSpellcheck: true
+                    )
+                )
+                coveredRanges.append(fullRange)
+            }
+        }
+
+        // 5f. Common homophone confusions: "eat stake" -> "eat steak"
+        if let steakRegex = try? NSRegularExpression(pattern: #"\b(eat|ate|eating|eats|cook|cooking|cooked|grilled|order|ordered|buy|bought|having)[ \t]+(stake|stakes)\b"#, options: [.caseInsensitive]) {
+            let matches = steakRegex.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length))
+            for match in matches {
+                let fullRange = match.range
+                let verbRange = match.range(at: 1)
+                let stakeRange = match.range(at: 2)
+                guard fullRange.location != NSNotFound, !overlapsActiveCaretOrExisting(fullRange) else { continue }
+                let verb = nsText.substring(with: verbRange)
+                let stakeWord = nsText.substring(with: stakeRange)
+                let replStake = stakeWord.lowercased() == "stakes" ? "steaks" : "steak"
+                let isStakeCap = stakeWord.first?.isUppercase == true
+                let formattedStake = isStakeCap ? replStake.capitalized : replStake
+                let orig = nsText.substring(with: fullRange)
+                let repl = "\(verb) \(formattedStake)"
+                issues.append(
+                    WritingIssue(
+                        original: orig,
+                        replacement: repl,
+                        category: .correctness,
+                        explanation: "Did you mean '\(formattedStake)' instead of '\(stakeWord)'?",
                         utf16Location: fullRange.location,
                         utf16Length: fullRange.length,
                         isLocalSpellcheck: true

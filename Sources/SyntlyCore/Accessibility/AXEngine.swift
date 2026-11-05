@@ -833,32 +833,22 @@ public final class AXEngine {
             return immediateText
         }
 
-        if immediateRange == expectedRange {
-            if let text = immediateText, !text.isEmpty {
-                if (text as NSString).length == expectedRange.length {
-                    return text
-                }
-            } else {
-                return ""
+        if immediateRange == expectedRange, let text = immediateText, !text.isEmpty {
+            if (text as NSString).length == expectedRange.length {
+                return text
             }
         }
 
         // In Chromium/Electron, setting kAXSelectedTextRangeAttribute dispatches an async IPC to the renderer.
-        // Poll for kAXSelectedTextRangeAttribute to reflect expectedRange (up to 20 x 5ms = 100ms).
+        // Poll for kAXSelectedTextRangeAttribute to reflect expectedRange and kAXSelectedTextAttribute to populate (up to 15 x 6ms = 90ms).
         var latestText = immediateText
         var latestRange = immediateRange
-        for _ in 0..<20 {
-            usleep(5_000)
+        for _ in 0..<15 {
+            usleep(6_000)
             latestText = copyStringAttribute(element, attribute: kAXSelectedTextAttribute)
             latestRange = copyRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute)
-            if latestRange == expectedRange {
-                if let text = latestText, !text.isEmpty {
-                    if (text as NSString).length == expectedRange.length {
-                        return text
-                    }
-                } else {
-                    return ""
-                }
+            if latestRange == expectedRange, let text = latestText, !text.isEmpty {
+                return text
             }
         }
         // If the element's reported selected range still does not match `expectedRange`, do not return stale text from an earlier range.
@@ -901,7 +891,13 @@ public final class AXEngine {
         }
 
         // Compute current range of `issue.original` in the live element text
-        let liveText = copyStringAttribute(element, attribute: kAXValueAttribute) ?? currentText
+        let liveAX = copyStringAttribute(element, attribute: kAXValueAttribute)
+        let liveText: String
+        if let axText = liveAX, axText.contains(issue.original) {
+            liveText = axText
+        } else {
+            liveText = currentText
+        }
         let nsLive = liveText as NSString
         let targetRange = Self.findBestOccurrenceRange(
             of: issue.original,

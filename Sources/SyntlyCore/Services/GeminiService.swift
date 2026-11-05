@@ -8,6 +8,7 @@ public enum LLMServiceError: LocalizedError {
     case invalidResponse(String)
     case httpError(statusCode: Int, message: String)
     case networkError(String)
+    case timeout
 
     public var errorDescription: String? {
         switch self {
@@ -21,6 +22,8 @@ public enum LLMServiceError: LocalizedError {
             return "API HTTP \(code): \(msg)"
         case .networkError(let msg):
             return "Network error: \(msg)"
+        case .timeout:
+            return "Analysis timed out after 5 seconds."
         }
     }
 }

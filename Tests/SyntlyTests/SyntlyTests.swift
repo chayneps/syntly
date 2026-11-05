@@ -1539,6 +1539,108 @@ final class SyntlyEndToEndTests: XCTestCase {
     }
 
     @MainActor
+    func testUserScreenshotsPic1And2TerminalPeriodAcceptFlow() async throws {
+        settings.enableLocalSpellcheck = true
+        let initialText = "I want to test what going on but I am not sure what it's gonna be. Try to think about the way to make some test"
+        let mockElectron = SimulatedSlackBulletAXAccessor(axValueText: initialText)
+        axEngine.elementAccessor = mockElectron
+        axEngine.setTestingFocusedElement(AXUIElementCreateSystemWide())
+
+        MockGeminiURLProtocol.requestHandler = { request in
+            let responseJSON = """
+            {
+              "choices": [{
+                "message": {
+                  "content": "{\\"issues\\": [{\\"original\\": \\"what going on\\", \\"replacement\\": \\"what's going on\\", \\"category\\": \\"correctness\\", \\"explanation\\": \\"Grammar\\"}, {\\"original\\": \\"some test\\", \\"replacement\\": \\"some test.\\", \\"category\\": \\"correctness\\", \\"explanation\\": \\"Terminal period\\"}]}"
+                }
+              }]
+            }
+            """
+            let http = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            return (http, Data(responseJSON.utf8))
+        }
+
+        coordinator.axEngineDidUpdateContext(
+            FocusedTextContext(
+                appName: "Antigravity",
+                bundleID: "com.google.antigravity",
+                pid: 999,
+                fullText: initialText,
+                selectedText: "",
+                selectedRange: NSRange(location: (initialText as NSString).length, length: 0)
+            )
+        )
+
+        try await Task.sleep(nanoseconds: 220_000_000)
+
+        // Both "what going on" and "some test" -> "some test." must be detected
+        XCTAssertEqual(coordinator.issues.count, 2)
+        XCTAssertEqual(coordinator.issues[0].original, "what going on")
+        XCTAssertEqual(coordinator.issues[1].original, "some test")
+
+        // 1. Accept "what going on" -> "what's going on"
+        coordinator.acceptIssue(coordinator.issues[0])
+        XCTAssertEqual(
+            mockElectron.axValueText,
+            "I want to test what's going on but I am not sure what it's gonna be. Try to think about the way to make some test"
+        )
+
+        // Terminal punctuation issue "some test" -> "some test." must STILL be present
+        XCTAssertEqual(coordinator.issues.count, 1)
+        XCTAssertEqual(coordinator.issues[0].original, "some test")
+        XCTAssertEqual(coordinator.issues[0].replacement, "some test.")
+
+        // 2. Sequential Alt-Tab accepts terminal period
+        coordinator.acceptIssue(coordinator.issues[0])
+        XCTAssertEqual(
+            mockElectron.axValueText,
+            "I want to test what's going on but I am not sure what it's gonna be. Try to think about the way to make some test."
+        )
+        XCTAssertTrue(coordinator.issues.isEmpty)
+        XCTAssertEqual(coordinator.pillState, PillVisualState.allClear)
+    }
+
+    @MainActor
+    func testUserScreenshotPic8StuckCheckingAndContractionHomophone() async throws {
+        settings.enableLocalSpellcheck = true
+        let text = "Lets try another time. I want to eat stake but not sure how to spell it."
+
+        // 1. Verify instant local detection finds both "Lets" -> "Let's" and "eat stake" -> "eat steak"
+        let localIssues = MacOSNLPEngine.analyzeLocally(text: text, caretUTF16Location: (text as NSString).length)
+        XCTAssertTrue(localIssues.contains { $0.original == "Lets" && $0.replacement == "Let's" })
+        XCTAssertTrue(localIssues.contains { $0.original == "eat stake" && $0.replacement == "eat steak" })
+
+        // 2. Verify coordinator never gets stuck in .checking when API fails or hangs
+        let mockElectron = SimulatedSlackBulletAXAccessor(axValueText: text)
+        axEngine.elementAccessor = mockElectron
+        axEngine.setTestingFocusedElement(AXUIElementCreateSystemWide())
+
+        MockGeminiURLProtocol.requestHandler = { _ in
+            throw URLError(.timedOut)
+        }
+
+        coordinator.axEngineDidUpdateContext(
+            FocusedTextContext(
+                appName: "Antigravity",
+                bundleID: "com.google.antigravity",
+                pid: 999,
+                fullText: text,
+                selectedText: "",
+                selectedRange: NSRange(location: (text as NSString).length, length: 0)
+            )
+        )
+
+        try await Task.sleep(nanoseconds: 220_000_000)
+
+        // Pill must NOT be stuck in .checking; it must reflect local fallback issues
+        if case .issuesFound(let count, _) = coordinator.pillState {
+            XCTAssertGreaterThanOrEqual(count, 1)
+        } else {
+            XCTFail("Pill state should be issuesFound, but got \(coordinator.pillState)")
+        }
+    }
+
+    @MainActor
     func testSequentialAltTabDeclarativePeriodPunctuationAndWordFixes() async throws {
         settings.enableLocalSpellcheck = true
         let initialText = "I want to test what going on but I am not sure what it's gonna be. Try to think about the way to make some test"
