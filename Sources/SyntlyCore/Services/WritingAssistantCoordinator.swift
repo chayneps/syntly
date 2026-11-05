@@ -578,10 +578,6 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
     public func acceptIssue(_ issue: WritingIssue) {
         guard !axEngine.isApplyingReplacement else { return }
         debounceTask?.cancel()
-        dismissedOriginals.insert(issue.original)
-        geminiService.clearCache()
-        lastReplacementTime = Date()
-        lastAcceptedReplacement = issue.replacement
 
         let currentText = currentContext?.fullText ?? lastAnalyzedParagraph
         let matchedRange = AXEngine.findBestOccurrenceRange(
@@ -602,6 +598,11 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         }
         let applied = axEngine.applyIssueReplacement(issue, in: currentText)
         guard applied else { return }
+
+        dismissedOriginals.insert(issue.original)
+        geminiService.clearCache()
+        lastReplacementTime = Date()
+        lastAcceptedReplacement = issue.replacement
 
         onIssueAccepted?(issue)
 

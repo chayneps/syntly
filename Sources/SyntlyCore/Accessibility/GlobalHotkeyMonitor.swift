@@ -116,10 +116,13 @@ public final class GlobalHotkeyMonitor {
 
     @discardableResult
     private func handleNSEvent(_ event: NSEvent) -> Bool {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let isOption = event.modifierFlags.contains(.option)
+        let isCommand = event.modifierFlags.contains(.command)
+        let isShift = event.modifierFlags.contains(.shift)
+        let isControl = event.modifierFlags.contains(.control)
 
         // 1. Option + Tab (keyCode 48 = Tab): Quick-Accept top inline suggestion
-        if event.keyCode == 48 && flags == [.option] {
+        if event.keyCode == 48 && isOption && !isCommand && !isControl && !isShift {
             DispatchQueue.main.async {
                 self.onQuickAcceptShortcut?()
             }
@@ -127,7 +130,7 @@ public final class GlobalHotkeyMonitor {
         }
 
         // 2. Cmd + Shift + G (keyCode 5 = 'g'): Open / Toggle Syntly Popover & Rewrite Bar
-        if event.keyCode == 5 && flags == [.command, .shift] {
+        if event.keyCode == 5 && isCommand && isShift && !isControl && !isOption {
             DispatchQueue.main.async {
                 self.onToggleRewritePanelShortcut?()
             }

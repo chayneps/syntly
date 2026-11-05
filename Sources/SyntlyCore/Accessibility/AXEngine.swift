@@ -830,7 +830,10 @@ public final class AXEngine {
 
         // When using synchronous test accessor or native controls, return immediately
         if elementAccessor != nil || !isChromium {
-            return immediateText
+            if let text = immediateText, !text.isEmpty {
+                return text
+            }
+            return immediateRange == expectedRange ? "" : immediateText
         }
 
         if immediateRange == expectedRange, let text = immediateText, !text.isEmpty {
@@ -851,11 +854,12 @@ public final class AXEngine {
                 return text
             }
         }
-        // If the element's reported selected range still does not match `expectedRange`, do not return stale text from an earlier range.
-        if let currentRange = latestRange, currentRange != expectedRange {
-            return nil
+        // If the element's reported selected range matches expectedRange, return the text if available,
+        // or "" if kAXSelectedTextAttribute is unsupported on this control, allowing verified fallback against fullText.
+        if latestRange == expectedRange {
+            return latestText ?? ""
         }
-        return latestText
+        return nil
     }
 
     @discardableResult
@@ -1177,7 +1181,7 @@ public final class AXEngine {
                         if currentSel == expected { break }
                     }
                 }
-                guard currentSel == expected else {
+                if let sel = currentSel, sel != expected {
                     self.isApplyingReplacement = false
                     return
                 }
