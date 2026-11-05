@@ -282,6 +282,20 @@ final class SyntlyUnitTests: XCTestCase {
         let currentLaunch = settings.launchAtLoginState
         settings.setLaunchAtLogin(!currentLaunch)
         settings.setLaunchAtLogin(currentLaunch)
+
+        // Pill size setting, defaults to compact (original size), and scales cleanly
+        XCTAssertEqual(settings.pillSize, .compact)
+        XCTAssertEqual(PillSize.compact.iconSize, 20.0)
+        XCTAssertEqual(PillSize.compact.panelSize, 32.0)
+        XCTAssertEqual(PillSize.medium.iconSize, 26.0)
+        XCTAssertEqual(PillSize.medium.panelSize, 40.0)
+        XCTAssertEqual(PillSize.large.iconSize, 34.0)
+        XCTAssertEqual(PillSize.large.panelSize, 48.0)
+
+        settings.pillSize = .large
+        XCTAssertEqual(settings.pillSize, .large)
+        settings.pillSize = .compact
+        XCTAssertEqual(settings.pillSize, .compact)
     }
 
     func testMultiModelTestResultsState() {

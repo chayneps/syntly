@@ -100,6 +100,14 @@ public final class AppSettings: ObservableObject {
         }
     }
 
+    @Published public var pillSize: PillSize {
+        didSet {
+            defaults.set(pillSize.rawValue, forKey: Keys.pillSize)
+            onPillSizeChanged?()
+        }
+    }
+    public var onPillSizeChanged: (() -> Void)?
+
     // MARK: - Dock & Launch at Login Preferences
 
     @Published public var showDockIcon: Bool {
@@ -167,6 +175,7 @@ public final class AppSettings: ObservableObject {
         static let pausedUntil = "syntly.pausedUntil"
         static let appPillOffsets = "syntly.appPillOffsets"
         static let appDialogOffsets = "syntly.appDialogOffsets"
+        static let pillSize = "syntly.pillSize"
         static let cliProxyBaseURL = "syntly.cliProxyBaseURL"
         static let showDockIcon = "syntly.showDockIcon"
         static let launchAtLogin = "syntly.launchAtLogin"
@@ -266,6 +275,13 @@ public final class AppSettings: ObservableObject {
             self.appDialogOffsets = decoded
         } else {
             self.appDialogOffsets = [:]
+        }
+
+        if let rawSize = defaults.string(forKey: Keys.pillSize),
+           let size = PillSize(rawValue: rawSize) {
+            self.pillSize = size
+        } else {
+            self.pillSize = .compact
         }
 
         if defaults.object(forKey: Keys.showDockIcon) == nil {

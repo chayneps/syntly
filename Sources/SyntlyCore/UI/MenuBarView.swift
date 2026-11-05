@@ -48,6 +48,12 @@ public struct MenuBarView: View {
             Toggle("Correct While I Type", isOn: $settings.enableAsYouType)
             Toggle("Instant Local Spellcheck", isOn: $settings.enableLocalSpellcheck)
 
+            Picker("Pill Size", selection: $settings.pillSize) {
+                ForEach(PillSize.allCases) { size in
+                    Text(size.displayName).tag(size)
+                }
+            }
+
             Divider()
 
             Toggle("Show Icon in Dock", isOn: $settings.showDockIcon)

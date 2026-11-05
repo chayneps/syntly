@@ -47,6 +47,10 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         self.axEngine.delegate = self
 
         setupHotkeys()
+
+        self.settings.onPillSizeChanged = { [weak self] in
+            self?.onOverlayStateChanged?()
+        }
     }
 
     public func start() {

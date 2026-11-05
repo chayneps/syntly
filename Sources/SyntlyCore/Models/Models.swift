@@ -48,6 +48,42 @@ public enum IssueCategory: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Floating Pill Size
+
+public enum PillSize: String, Codable, CaseIterable, Identifiable {
+    case compact = "Compact"
+    case medium = "Medium"
+    case large = "Large"
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .compact: return "Compact (Default)"
+        case .medium: return "Medium"
+        case .large: return "Large"
+        }
+    }
+
+    /// Size of the manga thought bubble drawing in points
+    public var iconSize: CGFloat {
+        switch self {
+        case .compact: return 20.0
+        case .medium: return 26.0
+        case .large: return 34.0
+        }
+    }
+
+    /// Size of the floating panel frame in points
+    public var panelSize: CGFloat {
+        switch self {
+        case .compact: return 32.0
+        case .medium: return 40.0
+        case .large: return 48.0
+        }
+    }
+}
+
 // MARK: - Writing Issue Model
 
 public struct WritingIssue: Identifiable, Codable, Equatable {

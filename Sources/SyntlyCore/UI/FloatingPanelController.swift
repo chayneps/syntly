@@ -339,7 +339,7 @@ public final class FloatingPanelController: NSObject {
         let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
 
         // Default top-left positioning relative to the start of text:
-        let bubbleSize: CGFloat = 48.0
+        let bubbleSize: CGFloat = coordinator.settings.pillSize.panelSize
         let hasRoomOnLeft = (context.anchorAppKitPoint.x - bubbleSize - 6) >= (screenFrame.minX + 8)
 
         let defaultOriginX: CGFloat
@@ -402,11 +402,12 @@ public final class FloatingPanelController: NSObject {
         } else {
             // Default behavior: Dialog opens cleanly directly above the pill.
             // If not enough room above, sit below the pill.
-            let roomAbove = screenFrame.maxY - 8 - (pillOrigin.y + 48 + 4 + dialogSize.height)
+            let bubbleSize = coordinator.settings.pillSize.panelSize
+            let roomAbove = screenFrame.maxY - 8 - (pillOrigin.y + bubbleSize + 4 + dialogSize.height)
             let roomBelow = (pillOrigin.y - 4 - dialogSize.height) - (screenFrame.minY + 8)
 
             if roomAbove >= 0 || roomAbove >= roomBelow {
-                originY = pillOrigin.y + 48 + 4
+                originY = pillOrigin.y + bubbleSize + 4
             } else {
                 originY = pillOrigin.y - 4 - dialogSize.height
             }
@@ -498,6 +499,24 @@ public final class FloatingPanelController: NSObject {
         resetPosItem.image = NSImage(systemSymbolName: "arrow.counterclockwise", accessibilityDescription: nil)
         menu.addItem(resetPosItem)
 
+        // Pill Size Submenu
+        let sizeMenu = NSMenu(title: "Pill Size")
+        for size in PillSize.allCases {
+            let item = NSMenuItem(
+                title: size.displayName,
+                action: #selector(handleSelectPillSize(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = size
+            item.state = (coordinator.settings.pillSize == size) ? .on : .off
+            sizeMenu.addItem(item)
+        }
+        let sizeParent = NSMenuItem(title: "Pill Size", action: nil, keyEquivalent: "")
+        sizeParent.submenu = sizeMenu
+        sizeParent.image = NSImage(systemSymbolName: "arrow.up.left.and.arrow.down.right", accessibilityDescription: nil)
+        menu.addItem(sizeParent)
+
         menu.addItem(.separator())
 
         if onOpenWritingPad != nil {
@@ -585,6 +604,12 @@ public final class FloatingPanelController: NSObject {
         let appKey = ctx.bundleID ?? ctx.appName
         coordinator.settings.resetPillOffset(for: appKey)
         coordinator.settings.resetDialogOffset(for: appKey)
+        syncPanelVisibilityAndFrame()
+    }
+
+    @objc private func handleSelectPillSize(_ sender: NSMenuItem) {
+        guard let size = sender.representedObject as? PillSize else { return }
+        coordinator.settings.pillSize = size
         syncPanelVisibilityAndFrame()
     }
 

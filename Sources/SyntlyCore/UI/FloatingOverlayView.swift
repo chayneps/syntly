@@ -27,7 +27,7 @@ func loadAppIconImage() -> NSImage? {
     return nil
 }
 
-// MARK: - Floating Pill View (48x48 Companion)
+// MARK: - Floating Pill View (Companion)
 
 public struct FloatingPillView: View {
     @ObservedObject var coordinator: WritingAssistantCoordinator
@@ -39,19 +39,20 @@ public struct FloatingPillView: View {
     }
 
     public var body: some View {
+        let size = coordinator.settings.pillSize
         ZStack(alignment: .topTrailing) {
-            // 1. Authentic Manga Thought Bubble App Icon (36x36)
-            Image(nsImage: StatusBarController.renderMangaBubble(size: 36))
+            // 1. Authentic Manga Thought Bubble App Icon
+            Image(nsImage: StatusBarController.renderMangaBubble(size: size.iconSize))
                 .resizable()
                 .aspectRatio(contentMode: .fit)
-                .frame(width: 36, height: 36)
+                .frame(width: size.iconSize, height: size.iconSize)
                 .scaleEffect(isHovered ? 1.08 : 1.0)
                 .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isHovered)
 
             // 2. Status Badge / Spinner
-            statusBadgeOverlay
+            statusBadgeOverlay(for: size)
         }
-        .frame(width: 48, height: 48)
+        .frame(width: size.panelSize, height: size.panelSize)
         .contentShape(Rectangle())
         .onHover { hovering in
             isHovered = hovering
@@ -89,34 +90,38 @@ public struct FloatingPillView: View {
     }
 
     @ViewBuilder
-    private var statusBadgeOverlay: some View {
+    private func statusBadgeOverlay(for size: PillSize) -> some View {
         switch coordinator.pillState {
         case .allClear:
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
-                .background(Circle().fill(.white).padding(1.5))
-                .font(.system(size: 13, weight: .bold))
-                .offset(x: 4, y: -4)
+                .background(Circle().fill(.white).padding(1.2))
+                .font(.system(size: size == .compact ? 10.5 : (size == .medium ? 11.5 : 13), weight: .bold))
+                .offset(x: size == .compact ? 3 : 4, y: size == .compact ? -3 : -4)
 
         case .checking:
             MangaThinkingDotsBadge()
-                .offset(x: 6, y: -5)
+                .scaleEffect(size == .compact ? 0.8 : (size == .medium ? 0.9 : 1.0))
+                .offset(x: size == .compact ? 3 : 5, y: size == .compact ? -3 : -5)
 
         case .issuesFound(let count, let topCategory):
             ZStack(alignment: .topTrailing) {
                 Text("\(count)")
-                    .font(.system(size: 10, weight: .heavy, design: .rounded))
+                    .font(.system(size: size == .compact ? 8.5 : (size == .medium ? 9.5 : 10), weight: .heavy, design: .rounded))
                     .foregroundStyle(.white)
-                    .frame(minWidth: 16, minHeight: 16)
-                    .padding(.horizontal, 3)
+                    .frame(minWidth: size == .compact ? 13 : (size == .medium ? 15 : 16),
+                           minHeight: size == .compact ? 13 : (size == .medium ? 15 : 16))
+                    .padding(.horizontal, size == .compact ? 2 : 3)
                     .background(topCategory.badgeColor, in: Capsule())
-                    .overlay(Capsule().strokeBorder(.white, lineWidth: 1.5))
+                    .overlay(Capsule().strokeBorder(.white, lineWidth: size == .compact ? 1.2 : 1.5))
                     .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
                     .scaleEffect(coordinator.isBadgeHovered ? 1.15 : 1.0)
                     .animation(.spring(response: 0.2, dampingFraction: 0.7), value: coordinator.isBadgeHovered)
-                    .offset(x: 5, y: -5)
+                    .offset(x: size == .compact ? 3 : 5, y: size == .compact ? -3 : -5)
             }
-            .frame(width: 26, height: 26, alignment: .topTrailing)
+            .frame(width: size == .compact ? 20 : (size == .medium ? 23 : 26),
+                   height: size == .compact ? 20 : (size == .medium ? 23 : 26),
+                   alignment: .topTrailing)
             .contentShape(Rectangle())
             .onHover { hovering in
                 coordinator.handleBadgeHover(hovering)
@@ -126,16 +131,16 @@ public struct FloatingPillView: View {
         case .paused:
             Image(systemName: "pause.circle.fill")
                 .foregroundStyle(.secondary)
-                .background(Circle().fill(.white).padding(1.5))
-                .font(.system(size: 13))
-                .offset(x: 4, y: -4)
+                .background(Circle().fill(.white).padding(1.2))
+                .font(.system(size: size == .compact ? 10.5 : (size == .medium ? 11.5 : 13)))
+                .offset(x: size == .compact ? 3 : 4, y: size == .compact ? -3 : -4)
 
         case .error:
             Image(systemName: "exclamationmark.circle.fill")
                 .foregroundStyle(.orange)
-                .background(Circle().fill(.white).padding(1.5))
-                .font(.system(size: 13))
-                .offset(x: 4, y: -4)
+                .background(Circle().fill(.white).padding(1.2))
+                .font(.system(size: size == .compact ? 10.5 : (size == .medium ? 11.5 : 13)))
+                .offset(x: size == .compact ? 3 : 4, y: size == .compact ? -3 : -4)
         }
     }
 }
