@@ -336,6 +336,13 @@ public final class FloatingPanelController: NSObject {
             return
         }
 
+        // Hide if English-only activation is enabled and text starts with non-English
+        if coordinator.settings.enableEnglishOnlyActivation && MacOSNLPEngine.startsWithNonEnglish(context.fullText) && !coordinator.isPopoverExpanded {
+            pill.orderOut(nil)
+            dialog.orderOut(nil)
+            return
+        }
+
         let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
 
         // Default top-left positioning relative to the start of text:

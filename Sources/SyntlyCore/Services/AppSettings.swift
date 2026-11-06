@@ -60,6 +60,13 @@ public final class AppSettings: ObservableObject {
         didSet { defaults.set(enableLocalSpellcheck, forKey: Keys.enableLocalSpellcheck) }
     }
 
+    @Published public var enableEnglishOnlyActivation: Bool {
+        didSet {
+            defaults.set(enableEnglishOnlyActivation, forKey: Keys.enableEnglishOnlyActivation)
+            onPillSizeChanged?()
+        }
+    }
+
     @Published public var personalDictionary: [String] {
         didSet { defaults.set(personalDictionary, forKey: Keys.personalDictionary) }
     }
@@ -168,6 +175,7 @@ public final class AppSettings: ObservableObject {
         static let debounceMs = "syntly.debounceMs"
         static let enableAsYouType = "syntly.enableAsYouType"
         static let enableLocalSpellcheck = "syntly.enableLocalSpellcheck"
+        static let enableEnglishOnlyActivation = "syntly.enableEnglishOnlyActivation"
         static let personalDictionary = "syntly.personalDictionary"
         static let blockedBundleIDs = "syntly.blockedBundleIDs"
         static let customStyleInstruction = "syntly.customStyleInstruction"
@@ -244,6 +252,12 @@ public final class AppSettings: ObservableObject {
             self.enableLocalSpellcheck = true
         } else {
             self.enableLocalSpellcheck = defaults.bool(forKey: Keys.enableLocalSpellcheck)
+        }
+
+        if defaults.object(forKey: Keys.enableEnglishOnlyActivation) == nil {
+            self.enableEnglishOnlyActivation = true
+        } else {
+            self.enableEnglishOnlyActivation = defaults.bool(forKey: Keys.enableEnglishOnlyActivation)
         }
 
         self.personalDictionary = defaults.stringArray(forKey: Keys.personalDictionary) ?? ["Synt(ax)ly", "Syntly", "macOS"]

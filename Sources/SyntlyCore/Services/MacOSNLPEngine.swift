@@ -6,6 +6,58 @@ import NaturalLanguage
 /// and `NSSpellChecker` to accelerate Check-While-Typing mode with zero external dependencies.
 public enum MacOSNLPEngine {
 
+    // MARK: - 0. Non-English Language Gate
+
+    /// Returns `true` when the text starts with a non-English language (e.g., Thai, CJK, Cyrillic, Arabic,
+    /// Hebrew, Devanagari, Greek, or a high-confidence non-English Latin phrase).
+    /// Skips leading whitespace, digits, bullets, punctuation, and emojis before inspecting the opening letters.
+    public static func startsWithNonEnglish(_ text: String) -> Bool {
+        // Extract contiguous letter words from the start of the text
+        let words = text.split(whereSeparator: { !$0.isLetter && $0 != "'" && $0 != "\u{2019}" })
+        guard let firstWord = words.first, let firstScalar = firstWord.unicodeScalars.first(where: { CharacterSet.letters.contains($0) }) else {
+            return false
+        }
+
+        // 1. Instant script check on the first word:
+        // Any non-Latin script (Thai 0x0E00..0x0E7F, CJK, Cyrillic, Arabic, Hebrew, Devanagari, Greek, etc.)
+        if firstScalar.value > 0x024F || firstWord.unicodeScalars.contains(where: { $0.value > 0x024F }) {
+            return true
+        }
+
+        // 2. Collect leading Latin-script words (stopping if a later word switches to non-Latin script)
+        var leadingLatinWords: [Substring] = []
+        for word in words.prefix(8) {
+            if word.unicodeScalars.contains(where: { $0.value > 0x024F }) {
+                break
+            }
+            leadingLatinWords.append(word)
+        }
+
+        // Extended / accented Latin in the opening words (e.g. "¿Cómo estás", "Bonjour à tous")
+        let openingTwoWordsScalars = leadingLatinWords.prefix(2).joined().unicodeScalars
+        let accentedLatinCount = openingTwoWordsScalars.filter { $0.value > 0x007A && $0.value <= 0x024F }.count
+        if firstScalar.value > 0x007A || accentedLatinCount >= 2 {
+            return true
+        }
+
+        // 3. For leading Latin text with at least 3 words (or any accented Latin word), check NLLanguageRecognizer
+        if leadingLatinWords.count >= 3 || accentedLatinCount >= 1 {
+            let sample = leadingLatinWords.joined(separator: " ")
+            let recognizer = NLLanguageRecognizer()
+            recognizer.processString(sample)
+            let hypotheses = recognizer.languageHypotheses(withMaximum: 3)
+            if let top = hypotheses.max(by: { $0.value < $1.value }),
+               top.key != .english,
+               top.key != .undetermined,
+               top.value >= 0.85,
+               (hypotheses[.english] ?? 0.0) < 0.10 {
+                return true
+            }
+        }
+
+        return false
+    }
+
     // MARK: - 1. Sentence & Bullet Clause Segmentation (`NLTokenizer`)
 
     public struct SentenceSegment: Equatable {

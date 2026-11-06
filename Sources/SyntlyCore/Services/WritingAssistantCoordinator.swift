@@ -331,6 +331,18 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             return
         }
 
+        if settings.enableEnglishOnlyActivation && MacOSNLPEngine.startsWithNonEnglish(ctx.fullText) {
+            debounceTask?.cancel()
+            issues = []
+            pillState = .allClear
+            if isPopoverExpanded {
+                isPopoverExpanded = false
+                cancelHoverTimers()
+            }
+            onOverlayStateChanged?()
+            return
+        }
+
         let analysisRange = ctx.analysisRange
         let paragraph = ctx.analysisText
         let baseOffset = analysisRange.location

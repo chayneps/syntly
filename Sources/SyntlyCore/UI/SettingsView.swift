@@ -368,6 +368,11 @@ public struct SettingsView: View {
                     }
                 }
 
+                Toggle("Only Activate on English Text", isOn: $settings.enableEnglishOnlyActivation)
+                Text("Automatically hides the pill and skips proofreading when text starts with a non-English language.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 HStack {
                     Text("Typing Pause Delay (\(settings.debounceMs) ms):")
                     Slider(

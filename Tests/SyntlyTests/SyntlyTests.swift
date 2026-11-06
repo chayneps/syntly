@@ -1828,6 +1828,63 @@ final class SyntlyEndToEndTests: XCTestCase {
         XCTAssertTrue(coordinator.issues.isEmpty)
         XCTAssertEqual(coordinator.pillState, PillVisualState.allClear)
     }
+
+    @MainActor
+    func testEnglishOnlyActivationSkipsNonEnglishAndActivatesOnEnglish() async throws {
+        // 1. Verify MacOSNLPEngine.startsWithNonEnglish detection across scripts and English typos
+        XCTAssertTrue(MacOSNLPEngine.startsWithNonEnglish("สวัสดีครับ วันนี้ต้องการ deploy v2"))
+        XCTAssertTrue(MacOSNLPEngine.startsWithNonEnglish("• วันนี้ต้อง deploy v2"))
+        XCTAssertTrue(MacOSNLPEngine.startsWithNonEnglish("1. こんにちは世界"))
+        XCTAssertTrue(MacOSNLPEngine.startsWithNonEnglish("你好，世界"))
+        XCTAssertTrue(MacOSNLPEngine.startsWithNonEnglish("안녕하세요 반갑습니다"))
+        XCTAssertTrue(MacOSNLPEngine.startsWithNonEnglish("Привет как дела"))
+        XCTAssertTrue(MacOSNLPEngine.startsWithNonEnglish("¿Cómo estás mi amigo?"))
+
+        // English sentences (including typos, contractions, and mixed later non-English) must return false
+        XCTAssertFalse(MacOSNLPEngine.startsWithNonEnglish("Lets try another time. I want to eat stake."))
+        XCTAssertFalse(MacOSNLPEngine.startsWithNonEnglish("It seem to not dealing with \".\" right now"))
+        XCTAssertFalse(MacOSNLPEngine.startsWithNonEnglish("Seems like it work fine now. I want to make this branch to be v2"))
+        XCTAssertFalse(MacOSNLPEngine.startsWithNonEnglish("Hello team, สวัสดี"))
+
+        // 2. Verify coordinator skips checking and clears issues when enableEnglishOnlyActivation is true (default)
+        XCTAssertTrue(settings.enableEnglishOnlyActivation)
+        settings.enableLocalSpellcheck = true
+        MockGeminiURLProtocol.capturedRequests = []
+
+        coordinator.axEngineDidUpdateContext(
+            FocusedTextContext(
+                appName: "Slack",
+                bundleID: "com.tinyspeck.slackmacgap",
+                pid: 777,
+                fullText: "สวัสดีครับ Lets try another time",
+                selectedText: "",
+                selectedRange: NSRange(location: 31, length: 0)
+            )
+        )
+
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        XCTAssertTrue(coordinator.issues.isEmpty)
+        XCTAssertEqual(coordinator.pillState, PillVisualState.allClear)
+        XCTAssertEqual(MockGeminiURLProtocol.capturedRequests.count, 0)
+
+        // 3. When user disables enableEnglishOnlyActivation, checking runs even if starting with non-English
+        settings.enableEnglishOnlyActivation = false
+        coordinator.axEngineDidUpdateContext(
+            FocusedTextContext(
+                appName: "Slack",
+                bundleID: "com.tinyspeck.slackmacgap",
+                pid: 777,
+                fullText: "สวัสดีครับ Lets try another time.",
+                selectedText: "",
+                selectedRange: NSRange(location: 32, length: 0)
+            )
+        )
+
+        // Local contraction check should now flag "Lets" -> "Let's"
+        XCTAssertTrue(coordinator.issues.contains(where: { $0.original == "Lets" && $0.replacement == "Let's" }))
+        settings.enableEnglishOnlyActivation = true
+    }
 }
 
 // MARK: - Simulated Slack / Chromium Rich-Text List AXUIElement Accessor
