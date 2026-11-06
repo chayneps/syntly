@@ -15,6 +15,7 @@ public final class NonActivatingPanel: NSPanel {
     public var onPillDragEnded: ((CGPoint) -> Void)?
     public var onDialogDragEnded: ((CGPoint) -> Void)?
     public var onPillSingleClick: (() -> Void)?
+    public var onDialogClicked: (() -> Void)?
     public var onPanelDoubleClick: (() -> Void)?
     public var onPillRightClick: ((NSEvent) -> Void)?
 
@@ -68,6 +69,7 @@ public final class NonActivatingPanel: NSPanel {
             isDraggingPill = false
 
             if isExpanded {
+                onDialogClicked?()
                 // When expanded: Allow dragging if click began in header bar (top 48pt) or footer bar (bottom 38pt)
                 let inFooter = localPoint.y <= 38
                 isDragCandidate = inHeader || inFooter
@@ -139,7 +141,8 @@ public final class NonActivatingPanel: NSPanel {
 
 @MainActor
 public final class FloatingPanelController: NSObject {
-    private var panel: NonActivatingPanel?
+    private var pillPanel: NonActivatingPanel?
+    private var dialogPanel: NonActivatingPanel?
     private let coordinator: WritingAssistantCoordinator
     public var onOpenWritingPad: (() -> Void)?
     public var onOpenSettings: (() -> Void)?
@@ -159,8 +162,8 @@ public final class FloatingPanelController: NSObject {
         }
     }
 
-    private func getOrCreatePanel() -> NonActivatingPanel {
-        if let existing = self.panel {
+    private func getOrCreatePillPanel() -> NonActivatingPanel {
+        if let existing = self.pillPanel {
             return existing
         }
 
@@ -180,12 +183,15 @@ public final class FloatingPanelController: NSObject {
         newPanel.hidesOnDeactivate = false
         newPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
 
-        newPanel.isPopoverExpanded = { [weak self] in
-            self?.coordinator.isPopoverExpanded ?? false
-        }
+        newPanel.isPopoverExpanded = { false }
 
         newPanel.onPillRightClick = { [weak self] event in
             self?.showPillContextMenu(with: event)
+        }
+
+        newPanel.onPillDragged = { [weak self] newPillOrigin in
+            guard let self = self, self.coordinator.isPopoverExpanded else { return }
+            self.repositionDialogPanel(relativeTo: newPillOrigin)
         }
 
         newPanel.onPillDragEnded = { [weak self] finalPanelOrigin in
@@ -198,6 +204,68 @@ public final class FloatingPanelController: NSObject {
             self.coordinator.settings.setPillOffset(offset, for: appKey)
         }
 
+        newPanel.onPillSingleClick = { [weak self] in
+            guard let self = self else { return }
+            if self.coordinator.isPopoverExpanded {
+                if self.coordinator.openedByHover {
+                    // Clicked while peeked open by hover -> pin it open so it won't auto-dismiss
+                    self.coordinator.openedByHover = false
+                } else {
+                    // Already open and pinned -> toggle closed
+                    self.coordinator.cancelHoverTimers()
+                    self.coordinator.isPopoverExpanded = false
+                    self.coordinator.onOverlayStateChanged?()
+                }
+            } else {
+                // Closed -> open pinned
+                self.coordinator.cancelHoverTimers()
+                self.coordinator.isPopoverExpanded = true
+                self.coordinator.onOverlayStateChanged?()
+            }
+        }
+
+        newPanel.onPanelDoubleClick = { [weak self] in
+            guard let self = self, let context = self.coordinator.currentContext else { return }
+            let appKey = context.bundleID ?? context.appName
+            self.coordinator.settings.resetPillOffset(for: appKey)
+            self.syncPanelVisibilityAndFrame()
+        }
+
+        let rootView = FloatingPillView(coordinator: coordinator)
+        let hostingController = NSHostingController(rootView: rootView)
+        newPanel.contentViewController = hostingController
+
+        self.pillPanel = newPanel
+        return newPanel
+    }
+
+    private func getOrCreateDialogPanel() -> NonActivatingPanel {
+        if let existing = self.dialogPanel {
+            return existing
+        }
+
+        let initialRect = NSRect(x: 200, y: 200, width: 380, height: 348)
+        let newPanel = NonActivatingPanel(
+            contentRect: initialRect,
+            styleMask: [.nonactivatingPanel, .borderless],
+            backing: .buffered,
+            defer: false
+        )
+
+        newPanel.level = .floating
+        newPanel.isOpaque = false
+        newPanel.backgroundColor = .clear
+        newPanel.hasShadow = true
+        newPanel.isMovableByWindowBackground = false
+        newPanel.hidesOnDeactivate = false
+        newPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+
+        newPanel.isPopoverExpanded = { true }
+
+        newPanel.onDialogClicked = { [weak self] in
+            self?.coordinator.openedByHover = false
+        }
+
         newPanel.onDialogDragEnded = { [weak self] finalPanelOrigin in
             guard let self = self, let context = self.coordinator.currentContext else { return }
             let appKey = context.bundleID ?? context.appName
@@ -208,43 +276,33 @@ public final class FloatingPanelController: NSObject {
             self.coordinator.settings.setDialogOffset(offset, for: appKey)
         }
 
-        newPanel.onPillSingleClick = { [weak self] in
-            guard let self = self else { return }
-            self.coordinator.isPopoverExpanded = true
-            self.coordinator.onOverlayStateChanged?()
-        }
-
         newPanel.onPanelDoubleClick = { [weak self] in
             guard let self = self, let context = self.coordinator.currentContext else { return }
             let appKey = context.bundleID ?? context.appName
-            if self.coordinator.isPopoverExpanded {
-                self.coordinator.settings.resetDialogOffset(for: appKey)
-            } else {
-                self.coordinator.settings.resetPillOffset(for: appKey)
-            }
+            self.coordinator.settings.resetDialogOffset(for: appKey)
             self.syncPanelVisibilityAndFrame()
         }
 
-        let rootView = FloatingOverlayView(coordinator: coordinator)
+        let rootView = FloatingDialogView(coordinator: coordinator)
         let hostingController = NSHostingController(rootView: rootView)
         newPanel.contentViewController = hostingController
 
-        self.panel = newPanel
+        self.dialogPanel = newPanel
         return newPanel
     }
 
     public func syncPanelVisibilityAndFrame() {
-        let panel = getOrCreatePanel()
+        let pill = getOrCreatePillPanel()
+        let dialog = getOrCreateDialogPanel()
 
         // If the user is actively dragging the pill with the mouse, never interrupt with an automatic reposition
-        if panel.isDraggingPill {
+        if pill.isDraggingPill {
             return
         }
 
         guard let context = coordinator.currentContext else {
-            if !coordinator.isPopoverExpanded {
-                panel.orderOut(nil)
-            }
+            pill.orderOut(nil)
+            dialog.orderOut(nil)
             return
         }
 
@@ -252,38 +310,36 @@ public final class FloatingPanelController: NSObject {
 
         // Hide if app is blocked and user hasn't manually opened the popover
         if coordinator.settings.isAppBlocked(bundleID: appKey) && !coordinator.isPopoverExpanded {
-            panel.orderOut(nil)
+            pill.orderOut(nil)
+            dialog.orderOut(nil)
             return
         }
 
         // Hide if app is paused for 1 hr and user hasn't manually opened the popover
         if coordinator.settings.isAppPaused(bundleID: appKey) && !coordinator.isPopoverExpanded {
-            panel.orderOut(nil)
+            pill.orderOut(nil)
+            dialog.orderOut(nil)
             return
         }
 
         // Hide if global pause is active and user hasn't manually opened the popover
         if coordinator.settings.isCurrentlyPaused() && !coordinator.isPopoverExpanded {
-            panel.orderOut(nil)
+            pill.orderOut(nil)
+            dialog.orderOut(nil)
             return
         }
 
         // Hide if text field is completely empty and popover is collapsed
         if context.fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !coordinator.isPopoverExpanded {
-            panel.orderOut(nil)
+            pill.orderOut(nil)
+            dialog.orderOut(nil)
             return
         }
-
-        panel.allowsKeyWindow = (coordinator.isPopoverExpanded && coordinator.isRewriteTabActive)
-
-        let targetSize: NSSize = coordinator.isPopoverExpanded
-            ? NSSize(width: 380, height: 348)
-            : NSSize(width: 48, height: 48)
 
         let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
 
         // Default top-left positioning relative to the start of text:
-        let bubbleSize: CGFloat = 48.0
+        let bubbleSize: CGFloat = coordinator.settings.pillSize.panelSize
         let hasRoomOnLeft = (context.anchorAppKitPoint.x - bubbleSize - 6) >= (screenFrame.minX + 8)
 
         let defaultOriginX: CGFloat
@@ -313,52 +369,61 @@ public final class FloatingPanelController: NSObject {
             pillOriginY = defaultOriginY
         }
 
+        let clampedPillX = max(screenFrame.minX + 4, min(pillOriginX, screenFrame.maxX - bubbleSize - 4))
+        let clampedPillY = max(screenFrame.minY + 4, min(pillOriginY, screenFrame.maxY - bubbleSize - 4))
+        let pillOrigin = CGPoint(x: clampedPillX, y: clampedPillY)
+
+        let pillFrame = NSRect(origin: pillOrigin, size: NSSize(width: bubbleSize, height: bubbleSize))
+        pill.setFrame(pillFrame, display: true, animate: false)
+        pill.orderFrontRegardless()
+
+        // Sync Dialog Panel
+        if coordinator.isPopoverExpanded {
+            repositionDialogPanel(relativeTo: pillOrigin)
+            dialog.allowsKeyWindow = coordinator.isRewriteTabActive
+            dialog.orderFrontRegardless()
+        } else {
+            dialog.orderOut(nil)
+        }
+    }
+
+    private func repositionDialogPanel(relativeTo pillOrigin: CGPoint) {
+        guard let dialog = self.dialogPanel, let context = coordinator.currentContext else { return }
+        let appKey = context.bundleID ?? context.appName
+        let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let dialogSize = NSSize(width: 380, height: 348)
+
         var originX: CGFloat
         var originY: CGFloat
 
-        if coordinator.isPopoverExpanded {
-            if let dialogOffset = coordinator.settings.dialogOffset(for: appKey) {
-                // User has dragged and set a custom position for the expanded dialog
-                originX = context.anchorAppKitPoint.x + dialogOffset.dx
-                originY = context.anchorAppKitPoint.y + dialogOffset.dy
-            } else {
-                // Default behavior: The dialog opens with its lower-left corner anchored right at the badge,
-                // opening upwards or downwards depending on screen room.
-                let badgeX = pillOriginX + 36.0
-                let badgeY = pillOriginY + 38.0
-
-                let roomAbove = screenFrame.maxY - 8 - badgeY
-                let roomBelow = badgeY - (screenFrame.minY + 8)
-
-                if roomAbove >= targetSize.height || roomAbove >= roomBelow {
-                    // Primary behavior: Dialog lower-left corner sits right at the badge, opening upwards
-                    originX = badgeX
-                    originY = badgeY
-                } else {
-                    // Secondary fallback (e.g. text input at top of screen): Dialog upper-left corner at badge, opening downwards
-                    originX = badgeX
-                    originY = badgeY - targetSize.height
-                }
-            }
+        if let dialogOffset = coordinator.settings.dialogOffset(for: appKey) {
+            originX = context.anchorAppKitPoint.x + dialogOffset.dx
+            originY = context.anchorAppKitPoint.y + dialogOffset.dy
         } else {
-            // Collapsed 48x48 icon
-            originX = pillOriginX
-            originY = pillOriginY
+            // Default behavior: Dialog opens cleanly directly above the pill.
+            // If not enough room above, sit below the pill.
+            let bubbleSize = coordinator.settings.pillSize.panelSize
+            let roomAbove = screenFrame.maxY - 8 - (pillOrigin.y + bubbleSize + 4 + dialogSize.height)
+            let roomBelow = (pillOrigin.y - 4 - dialogSize.height) - (screenFrame.minY + 8)
+
+            if roomAbove >= 0 || roomAbove >= roomBelow {
+                originY = pillOrigin.y + bubbleSize + 4
+            } else {
+                originY = pillOrigin.y - 4 - dialogSize.height
+            }
+            originX = pillOrigin.x
         }
 
-        // Keep panel safely inside visible screen bounds
-        originX = max(screenFrame.minX + 8, min(originX, screenFrame.maxX - targetSize.width - 8))
-        originY = max(screenFrame.minY + 8, min(originY, screenFrame.maxY - targetSize.height - 8))
+        originX = max(screenFrame.minX + 8, min(originX, screenFrame.maxX - dialogSize.width - 8))
+        originY = max(screenFrame.minY + 8, min(originY, screenFrame.maxY - dialogSize.height - 8))
 
-        let newFrame = NSRect(origin: CGPoint(x: originX, y: originY), size: targetSize)
-        panel.setFrame(newFrame, display: true, animate: false)
-        panel.orderFrontRegardless()
+        dialog.setFrame(NSRect(origin: CGPoint(x: originX, y: originY), size: dialogSize), display: true, animate: false)
     }
 
     // MARK: - Pill Context Menu (Right Click)
 
     public func showPillContextMenu(with event: NSEvent) {
-        guard let panel = self.panel, let contentView = panel.contentView else { return }
+        guard let panel = self.pillPanel, let contentView = panel.contentView else { return }
 
         let menu = NSMenu(title: "Synt(ax)ly")
         menu.autoenablesItems = false
@@ -433,6 +498,24 @@ public final class FloatingPanelController: NSObject {
         resetPosItem.target = self
         resetPosItem.image = NSImage(systemSymbolName: "arrow.counterclockwise", accessibilityDescription: nil)
         menu.addItem(resetPosItem)
+
+        // Pill Size Submenu
+        let sizeMenu = NSMenu(title: "Pill Size")
+        for size in PillSize.allCases {
+            let item = NSMenuItem(
+                title: size.displayName,
+                action: #selector(handleSelectPillSize(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = size
+            item.state = (coordinator.settings.pillSize == size) ? .on : .off
+            sizeMenu.addItem(item)
+        }
+        let sizeParent = NSMenuItem(title: "Pill Size", action: nil, keyEquivalent: "")
+        sizeParent.submenu = sizeMenu
+        sizeParent.image = NSImage(systemSymbolName: "arrow.up.left.and.arrow.down.right", accessibilityDescription: nil)
+        menu.addItem(sizeParent)
 
         menu.addItem(.separator())
 
@@ -524,8 +607,14 @@ public final class FloatingPanelController: NSObject {
         syncPanelVisibilityAndFrame()
     }
 
+    @objc private func handleSelectPillSize(_ sender: NSMenuItem) {
+        guard let size = sender.representedObject as? PillSize else { return }
+        coordinator.settings.pillSize = size
+        syncPanelVisibilityAndFrame()
+    }
+
     @objc private func handleOpenWritingPad(_ sender: Any?) {
-        onOpenWritingPad?()
+        coordinator.openWritingPadToRewrite()
     }
 
     @objc private func handleOpenSettings(_ sender: Any?) {

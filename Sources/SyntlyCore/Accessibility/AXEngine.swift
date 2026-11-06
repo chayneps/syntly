@@ -99,6 +99,7 @@ public final class AXEngine {
     private var workspaceTokens: [NSObjectProtocol] = []
     private var trustPollTimer: Timer?
     private var enabledElectronPIDs = Set<pid_t>()
+    public private(set) var isApplyingReplacement: Bool = false
 
     public init() {}
 
@@ -264,6 +265,10 @@ public final class AXEngine {
     // MARK: - Inspect Focused Text Element
 
     public func pollCurrentFocusedElement() {
+        if isApplyingReplacement && elementAccessor == nil {
+            return
+        }
+
         guard checkTrust(prompt: false) else {
             delegate?.axEngineDidUpdateContext(nil)
             return
@@ -410,31 +415,24 @@ public final class AXEngine {
         var searchRange = NSRange(location: 0, length: normText.length)
         var bestWholeWordRange = NSRange(location: NSNotFound, length: 0)
         var bestWholeWordDistance = Int.max
-        var bestFallbackRange = NSRange(location: NSNotFound, length: 0)
-        var bestFallbackDistance = Int.max
 
         while searchRange.location < normText.length {
             let found = normText.range(of: normSub, options: [], range: searchRange)
             guard found.location != NSNotFound else { break }
 
-            let wholeWord = isWholeWordMatch(range: found, of: normSub, in: normText)
-            let distance = preferredUTF16Location.map { abs(found.location - $0) } ?? found.location
-
-            if wholeWord {
+            if isWholeWordMatch(range: found, of: normSub, in: normText) {
+                let distance = preferredUTF16Location.map { abs(found.location - $0) } ?? found.location
                 if distance < bestWholeWordDistance {
                     bestWholeWordDistance = distance
                     bestWholeWordRange = found
                 }
-            } else if distance < bestFallbackDistance {
-                bestFallbackDistance = distance
-                bestFallbackRange = found
             }
 
             let nextLoc = found.location + max(1, found.length)
             searchRange = NSRange(location: nextLoc, length: normText.length - nextLoc)
         }
 
-        return bestWholeWordRange.location != NSNotFound ? bestWholeWordRange : bestFallbackRange
+        return bestWholeWordRange
     }
 
     /// Estimates candidate UTF-16 offset drifts caused by rich-text bullet / numbered list markers or CRLF line endings
@@ -582,6 +580,71 @@ public final class AXEngine {
         return candidates
     }
 
+    /// Translates a DOM selection UTF-16 offset (from `kAXSelectedTextRangeAttribute` in Chromium/Electron/Slack)
+    /// into the corresponding UTF-16 offset in `kAXValueAttribute` (which contains rich-text list markers like `"• "` or `"1. "`).
+    public static func convertDOMSelectionToAXValueOffset(domLocation: Int, in fullText: String) -> Int {
+        let nsText = fullText as NSString
+        guard domLocation > 0, nsText.length > 0 else { return 0 }
+
+        let bulletChars = CharacterSet(charactersIn: "•◦▪▫▸‣⁃-*+☐☑✓✔")
+        var currentDOM = 0
+        var lineStartAX = 0
+
+        while lineStartAX < nsText.length {
+            let lineRange = nsText.lineRange(for: NSRange(location: lineStartAX, length: 0))
+            let line = nsText.substring(with: lineRange)
+            let nsLine = line as NSString
+
+            var markerLenAX = 0
+            var markerLenDOM = 0
+
+            var idx = 0
+            while idx < nsLine.length {
+                let ch = nsLine.character(at: idx)
+                if ch == 0x20 || ch == 0x09 || ch == 0x00A0 { idx += 1 } else { break }
+            }
+
+            if idx < nsLine.length, let scalar = UnicodeScalar(nsLine.character(at: idx)), bulletChars.contains(scalar) {
+                var after = idx + 1
+                while after < nsLine.length {
+                    let ch = nsLine.character(at: after)
+                    if ch == 0x20 || ch == 0x09 || ch == 0x00A0 { after += 1 } else { break }
+                }
+                markerLenAX = after
+                markerLenDOM = 1 // In Slack/Chromium DOM selection space, bullet markers occupy 1 unit
+            } else if idx < nsLine.length {
+                var numEnd = idx
+                while numEnd < nsLine.length {
+                    let ch = nsLine.character(at: numEnd)
+                    if ch >= 0x30 && ch <= 0x39 { numEnd += 1 } else { break }
+                }
+                if numEnd > idx && numEnd + 1 < nsLine.length {
+                    let punct = nsLine.character(at: numEnd)
+                    let sp = nsLine.character(at: numEnd + 1)
+                    if (punct == 0x2E || punct == 0x29) && (sp == 0x20 || sp == 0x09 || sp == 0x00A0) {
+                        markerLenAX = numEnd + 2
+                        markerLenDOM = 1
+                    }
+                }
+            }
+
+            let contentLenAX = nsLine.length - markerLenAX
+            let lineLenDOM = markerLenDOM + contentLenAX
+
+            if currentDOM + lineLenDOM > domLocation || lineRange.location + lineRange.length >= nsText.length {
+                let offsetInDOM = max(0, domLocation - currentDOM)
+                let offsetInAX = markerLenAX + max(0, offsetInDOM - markerLenDOM)
+                return min(lineRange.location + offsetInAX, nsText.length)
+            }
+
+            currentDOM += lineLenDOM
+            let nextStart = lineRange.location + lineRange.length
+            if nextStart <= lineStartAX { break }
+            lineStartAX = nextStart
+        }
+        return min(domLocation, nsText.length)
+    }
+
     /// Computes the exact UTF-16 offset adjustment between `expected` and `actualAtRange`
     /// when `kAXSelectedTextAttribute` is shifted left or right due to rich-text / DOM markers.
     public static func computeRangeOffsetCorrection(expected: String, actualAtRange: String) -> Int? {
@@ -593,11 +656,12 @@ public final class AXEngine {
         guard expLen >= 2, actLen >= 1 else { return nil }
 
         let maxOverlap = min(expLen - 1, actLen)
+        let minOverlap = expLen <= 3 ? 1 : max(2, expLen / 2)
 
         // Case 1: DOM selection is shifted to the RIGHT of `expected` (requires negative shift).
         // A suffix of `expected` matches a prefix of `actualAtRange`.
-        if maxOverlap >= 1 {
-            for overlap in stride(from: maxOverlap, through: 1, by: -1) {
+        if maxOverlap >= minOverlap {
+            for overlap in stride(from: maxOverlap, through: minOverlap, by: -1) {
                 if overlap < 2 && actLen > 1 { continue }
                 let expectedSuffix = nsExpected.substring(from: expLen - overlap)
                 let actualPrefix = nsActual.substring(to: overlap)
@@ -609,8 +673,9 @@ public final class AXEngine {
 
         // Case 2: DOM selection is shifted to the LEFT of `expected` (requires positive shift).
         // A prefix of `expected` matches a suffix of `actualAtRange`.
-        if maxOverlap >= 2 {
-            for overlap in stride(from: maxOverlap, through: 2, by: -1) {
+        let minLeftOverlap = max(2, minOverlap)
+        if maxOverlap >= minLeftOverlap {
+            for overlap in stride(from: maxOverlap, through: minLeftOverlap, by: -1) {
                 let expectedPrefix = nsExpected.substring(to: overlap)
                 let actualSuffix = nsActual.substring(from: actLen - overlap)
                 if expectedPrefix == actualSuffix {
@@ -635,7 +700,15 @@ public final class AXEngine {
     ) -> NSRange? {
         guard rawRange.location != NSNotFound, rawRange.length > 0 else { return nil }
 
+        let priorSelectionRange = copyRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute)
+        let listDrifts = Self.estimateListMarkerDrifts(in: fullText, upTo: rawRange.location)
         var triedLocations = Set<Int>()
+
+        func restorePriorSelection() {
+            if let prior = priorSelectionRange {
+                _ = setRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute, range: prior)
+            }
+        }
 
         func tryLocation(_ loc: Int) -> (matched: Bool, actualText: String?) {
             guard loc >= 0 else { return (false, nil) }
@@ -643,10 +716,24 @@ public final class AXEngine {
             let candidate = NSRange(location: loc, length: rawRange.length)
             _ = setRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute, range: candidate)
             let actual = readSettledSelectedText(from: element, expectedRange: candidate, isChromium: isChromium)
-            if let actual = actual, Self.typographicallyEqual(actual, expectedOriginal) {
-                return (true, actual)
+            if let actual = actual {
+                if Self.typographicallyEqual(actual, expectedOriginal) {
+                    return (true, actual)
+                }
+                // Fallback for plain-text controls where kAXSelectedTextAttribute is unsupported (returns ""),
+                // but kAXSelectedTextRangeAttribute was verified to match candidate.
+                if actual.isEmpty && listDrifts.isEmpty {
+                    let nsFull = fullText as NSString
+                    if candidate.location + candidate.length <= nsFull.length {
+                        let textAtCandidate = nsFull.substring(with: candidate)
+                        if Self.typographicallyEqual(textAtCandidate, expectedOriginal) {
+                            return (true, textAtCandidate)
+                        }
+                    }
+                }
+                return (false, actual)
             }
-            return (false, actual)
+            return (false, nil)
         }
 
         // 1. Try rawRange first
@@ -655,7 +742,15 @@ public final class AXEngine {
             return rawRange
         }
 
-        // 2. If `kAXSelectedTextAttribute` returned shifted text, compute exact overlap correction first
+        // Plain-text fast path: When there are no bullet points, numbered list markers, or CRLF line breaks
+        // prior to `rawRange.location`, UTF-16 offsets in `kAXValueAttribute` and `kAXSelectedTextRangeAttribute`
+        // are identical. If initialAttempt did not match, abort immediately to prevent out-of-order text corruption.
+        if listDrifts.isEmpty {
+            restorePriorSelection()
+            return nil
+        }
+
+        // 2. If `kAXSelectedTextAttribute` returned shifted text in a list, compute exact overlap correction first
         if let actual = initialAttempt.actualText,
            !actual.isEmpty,
            let shift = Self.computeRangeOffsetCorrection(expected: expectedOriginal, actualAtRange: actual) {
@@ -669,7 +764,6 @@ public final class AXEngine {
         }
 
         // 3. Try estimated list marker drifts (handles bullets, numbered lists, and CRLF, including words at EOF)
-        let listDrifts = Self.estimateListMarkerDrifts(in: fullText, upTo: rawRange.location)
         for drift in listDrifts {
             let candidateLoc = rawRange.location + drift
             if candidateLoc >= 0 && !triedLocations.contains(candidateLoc) {
@@ -692,10 +786,10 @@ public final class AXEngine {
             }
         }
 
-        // 4. Bounded spiral search around rawRange.location (and primary list drift if present)
-        let baseLocations = [rawRange.location] + listDrifts.prefix(3).map { rawRange.location + $0 }
+        // 4. Tightly bounded local search around estimated list drifts only
+        let baseLocations = listDrifts.prefix(3).map { rawRange.location + $0 }
         for baseLoc in baseLocations {
-            for radius in 1...20 {
+            for radius in 1...4 {
                 for sign in [-1, 1] {
                     let candidateLoc = baseLoc + (radius * sign)
                     if candidateLoc >= 0 && !triedLocations.contains(candidateLoc) {
@@ -722,6 +816,7 @@ public final class AXEngine {
         }
 
         // Never overwrite unverified mismatched text if `kAXSelectedTextAttribute` reported different non-empty text
+        restorePriorSelection()
         return nil
     }
 
@@ -735,29 +830,36 @@ public final class AXEngine {
 
         // When using synchronous test accessor or native controls, return immediately
         if elementAccessor != nil || !isChromium {
-            return immediateText
+            if let text = immediateText, !text.isEmpty {
+                return text
+            }
+            return immediateRange == expectedRange ? "" : immediateText
         }
 
-        if let text = immediateText,
-           (text as NSString).length == expectedRange.length,
-           immediateRange == expectedRange {
-            return text
-        }
-
-        // In Chromium/Electron, setting kAXSelectedTextRangeAttribute dispatches an async IPC to the renderer.
-        // Poll briefly (up to 4 x 4ms = 16ms) for kAXSelectedTextAttribute to reflect the updated selection.
-        var latestText = immediateText
-        for _ in 0..<4 {
-            usleep(4_000)
-            latestText = copyStringAttribute(element, attribute: kAXSelectedTextAttribute)
-            let currentRange = copyRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute)
-            if let text = latestText,
-               (text as NSString).length == expectedRange.length,
-               currentRange == expectedRange {
+        if immediateRange == expectedRange, let text = immediateText, !text.isEmpty {
+            if (text as NSString).length == expectedRange.length {
                 return text
             }
         }
-        return latestText
+
+        // In Chromium/Electron, setting kAXSelectedTextRangeAttribute dispatches an async IPC to the renderer.
+        // Poll for kAXSelectedTextRangeAttribute to reflect expectedRange and kAXSelectedTextAttribute to populate (up to 15 x 6ms = 90ms).
+        var latestText = immediateText
+        var latestRange = immediateRange
+        for _ in 0..<15 {
+            usleep(6_000)
+            latestText = copyStringAttribute(element, attribute: kAXSelectedTextAttribute)
+            latestRange = copyRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute)
+            if latestRange == expectedRange, let text = latestText, !text.isEmpty {
+                return text
+            }
+        }
+        // If the element's reported selected range matches expectedRange, return the text if available,
+        // or "" if kAXSelectedTextAttribute is unsupported on this control, allowing verified fallback against fullText.
+        if latestRange == expectedRange {
+            return latestText ?? ""
+        }
+        return nil
     }
 
     @discardableResult
@@ -786,10 +888,20 @@ public final class AXEngine {
             } else {
                 app.activate(options: .activateIgnoringOtherApps)
             }
+            for _ in 0..<10 {
+                if app.isActive { break }
+                usleep(10_000)
+            }
         }
 
         // Compute current range of `issue.original` in the live element text
-        let liveText = copyStringAttribute(element, attribute: kAXValueAttribute) ?? currentText
+        let liveAX = copyStringAttribute(element, attribute: kAXValueAttribute)
+        let liveText: String
+        if let axText = liveAX, axText.contains(issue.original) {
+            liveText = axText
+        } else {
+            liveText = currentText
+        }
         let nsLive = liveText as NSString
         let targetRange = Self.findBestOccurrenceRange(
             of: issue.original,
@@ -800,6 +912,7 @@ public final class AXEngine {
         guard targetRange.location != NSNotFound else { return false }
 
         if elementAccessor == nil {
+            isApplyingReplacement = true
             _ = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         }
 
@@ -813,6 +926,7 @@ public final class AXEngine {
             element: element,
             isChromium: isChromium
         ) else {
+            isApplyingReplacement = false
             return false
         }
 
@@ -834,6 +948,7 @@ public final class AXEngine {
                     }
                     if elementAccessor == nil {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            self.isApplyingReplacement = false
                             self.pollCurrentFocusedElement()
                         }
                     }
@@ -857,6 +972,7 @@ public final class AXEngine {
                         }
                         if elementAccessor == nil {
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                self.isApplyingReplacement = false
                                 self.pollCurrentFocusedElement()
                             }
                         }
@@ -986,20 +1102,27 @@ public final class AXEngine {
         return targetApp
     }
 
-    private func isChromiumOrElectronApp(_ targetApp: NSRunningApplication?, element: AXUIElement) -> Bool {
-        if let accessorResult = elementAccessor?.isChromiumOrElectron(element) {
-            return accessorResult
-        }
-
-        let app = targetApp ?? NSWorkspace.shared.frontmostApplication
-        let bid = (app?.bundleIdentifier ?? "").lowercased()
-        let name = (app?.localizedName ?? "").lowercased()
+    public static func isChromiumOrElectronApp(bundleID: String?, appName: String? = nil) -> Bool {
+        let bid = (bundleID ?? "").lowercased()
+        let name = (appName ?? "").lowercased()
 
         if bid.contains("chrome") || bid.contains("antigravity") || bid.contains("electron") ||
            bid.contains("slack") || bid.contains("vscode") || bid.contains("code") ||
            bid.contains("brave") || bid.contains("edge") || bid.contains("discord") ||
            bid.contains("notion") || bid.contains("cursor") ||
            name.contains("chrome") || name.contains("antigravity") {
+            return true
+        }
+        return false
+    }
+
+    private func isChromiumOrElectronApp(_ targetApp: NSRunningApplication?, element: AXUIElement) -> Bool {
+        if let accessorResult = elementAccessor?.isChromiumOrElectron(element) {
+            return accessorResult
+        }
+
+        let app = targetApp ?? NSWorkspace.shared.frontmostApplication
+        if Self.isChromiumOrElectronApp(bundleID: app?.bundleIdentifier, appName: app?.localizedName) {
             return true
         }
 
@@ -1044,19 +1167,23 @@ public final class AXEngine {
             }
         }
 
-        // Delay 50ms to allow target window and selection to settle
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            // Re-verify selection right before dispatching Cmd+V in case window/panel transition disturbed it
-            if let el = element, let range = calibratedRange {
-                if let expected = expectedOriginal {
-                    let currentSelected = self.copyStringAttribute(el, attribute: kAXSelectedTextAttribute)
-                    if currentSelected != expected {
-                        _ = self.setRangeAttribute(el, attribute: kAXSelectedTextRangeAttribute, range: range)
-                        usleep(12_000)
+        // Delay 45ms to allow target window and selection to settle before posting Cmd+V.
+        // Do NOT call setRangeAttribute again inside this block: firing an async AX selection IPC right before
+        // Cmd+V causes the selection IPC in Chromium/Electron to arrive *after* the paste and highlight the pasted text.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.045) {
+            // Verify that the element's reported selection matches calibratedRange before posting Cmd+V
+            if let element = element, let expected = calibratedRange {
+                var currentSel = self.copyRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute)
+                if currentSel != expected {
+                    for _ in 0..<15 {
+                        usleep(5_000)
+                        currentSel = self.copyRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute)
+                        if currentSel == expected { break }
                     }
-                } else if self.copyRangeAttribute(el, attribute: kAXSelectedTextRangeAttribute) != range {
-                    _ = self.setRangeAttribute(el, attribute: kAXSelectedTextRangeAttribute, range: range)
-                    usleep(12_000)
+                }
+                if let sel = currentSel, sel != expected {
+                    self.isApplyingReplacement = false
+                    return
                 }
             }
 
@@ -1072,6 +1199,7 @@ public final class AXEngine {
 
             guard let vDown = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: true),
                   let vUp = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: false) else {
+                self.isApplyingReplacement = false
                 return
             }
 
@@ -1081,6 +1209,12 @@ public final class AXEngine {
             vDown.post(tap: .cgSessionEventTap)
             vUp.post(tap: .cgSessionEventTap)
 
+            // Re-enable AX polling once the target editor has processed the Cmd+V paste
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) {
+                self.isApplyingReplacement = false
+                self.pollCurrentFocusedElement()
+            }
+
             // Safe clipboard restoration after 1.2 seconds:
             // Only restore if clipboard still contains the replacement text (user hasn't copied something else)
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
@@ -1088,7 +1222,6 @@ public final class AXEngine {
                     pasteboard.clearContents()
                     pasteboard.setString(prev, forType: .string)
                 }
-                self.pollCurrentFocusedElement()
             }
         }
     }

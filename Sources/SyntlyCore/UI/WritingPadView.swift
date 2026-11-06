@@ -130,10 +130,21 @@ public struct WritingPadView: View {
                 padText = updated
                 runPadCheck()
             }
-            if !padText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && padIssues.isEmpty {
+            if let incoming = coordinator.incomingWritingPadText, !incoming.isEmpty {
+                padText = incoming
+                coordinator.incomingWritingPadText = nil
+                schedulePadCheck(for: incoming)
+            } else if !padText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && padIssues.isEmpty {
                 DispatchQueue.main.async {
                     runPadCheck()
                 }
+            }
+        }
+        .onChange(of: coordinator.incomingWritingPadText) { _, newText in
+            if let newText = newText, !newText.isEmpty {
+                padText = newText
+                coordinator.incomingWritingPadText = nil
+                schedulePadCheck(for: newText)
             }
         }
         .sheet(isPresented: $showSavePresetSheet) {

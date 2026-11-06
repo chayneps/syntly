@@ -282,6 +282,20 @@ final class SyntlyUnitTests: XCTestCase {
         let currentLaunch = settings.launchAtLoginState
         settings.setLaunchAtLogin(!currentLaunch)
         settings.setLaunchAtLogin(currentLaunch)
+
+        // Pill size setting, defaults to compact (original size), and scales cleanly
+        XCTAssertEqual(settings.pillSize, .compact)
+        XCTAssertEqual(PillSize.compact.iconSize, 20.0)
+        XCTAssertEqual(PillSize.compact.panelSize, 32.0)
+        XCTAssertEqual(PillSize.medium.iconSize, 26.0)
+        XCTAssertEqual(PillSize.medium.panelSize, 40.0)
+        XCTAssertEqual(PillSize.large.iconSize, 34.0)
+        XCTAssertEqual(PillSize.large.panelSize, 48.0)
+
+        settings.pillSize = .large
+        XCTAssertEqual(settings.pillSize, .large)
+        settings.pillSize = .compact
+        XCTAssertEqual(settings.pillSize, .compact)
     }
 
     func testMultiModelTestResultsState() {
@@ -326,6 +340,209 @@ final class SyntlyUnitTests: XCTestCase {
         } else {
             XCTFail("Expected .completed state")
         }
+    }
+
+    func testMacOSNLPEngineActiveWordCaretProtection() {
+        // User is actively typing "Let try" at the end of the line (caret is at UTF-16 index 7, right after 'y')
+        let inProgressText = "Let try"
+        let activeRange = MacOSNLPEngine.activeTypingWordRange(in: inProgressText, caretUTF16Location: 7)
+        XCTAssertEqual(activeRange, NSRange(location: 4, length: 3))
+
+        // Because caret is touching "try", "Let try" should NOT be flagged while the user is still typing "try..."
+        let midWordIssues = MacOSNLPEngine.analyzeLocally(text: inProgressText, caretUTF16Location: 7)
+        XCTAssertTrue(midWordIssues.isEmpty, "Must not flag an unfinished word/phrase while the caret is actively inside it")
+
+        // Once the user presses Space ("Let try "), caret is at 8 (after space), so "Let try" is flagged immediately
+        let completedWordText = "Let try "
+        let completedIssues = MacOSNLPEngine.analyzeLocally(text: completedWordText, caretUTF16Location: 8)
+        XCTAssertEqual(completedIssues.first?.original, "Let try")
+        XCTAssertEqual(completedIssues.first?.replacement, "Let's try")
+    }
+
+    func testMacOSNLPEngineDuplicateWordsArticlesAndBulletLetContractions() {
+        let sample = """
+        Summary of the the release:
+        • Let try an user onboarding flow
+        • Let also fix a apple icon and a hour timer
+        """
+        let issues = MacOSNLPEngine.analyzeLocally(text: sample, caretUTF16Location: nil)
+
+        XCTAssertTrue(issues.contains(where: { $0.original == "the the" && $0.replacement == "the" }))
+        XCTAssertTrue(issues.contains(where: { $0.original == "Let try" && $0.replacement == "Let's try" }))
+        XCTAssertTrue(issues.contains(where: { $0.original == "an user" && $0.replacement == "a user" }))
+        XCTAssertTrue(issues.contains(where: { $0.original == "Let also" && $0.replacement == "Let's also" }))
+        XCTAssertTrue(issues.contains(where: { $0.original == "a apple" && $0.replacement == "an apple" }))
+        XCTAssertTrue(issues.contains(where: { $0.original == "a hour" && $0.replacement == "an hour" }))
+    }
+
+    func testMacOSNLPEngineEntityAndTechnicalIdentifierImmunity() {
+        let text = "Ask @pumisake in #release-v2 about cliProxyAPI, JSON, user_id, and v1.0."
+        let nsText = text as NSString
+
+        let mentionRange = nsText.range(of: "pumisake")
+        XCTAssertTrue(MacOSNLPEngine.isImmuneToken("pumisake", at: mentionRange, in: text))
+
+        let camelRange = nsText.range(of: "cliProxyAPI")
+        XCTAssertTrue(MacOSNLPEngine.isImmuneToken("cliProxyAPI", at: camelRange, in: text))
+
+        let acronymRange = nsText.range(of: "JSON")
+        XCTAssertTrue(MacOSNLPEngine.isImmuneToken("JSON", at: acronymRange, in: text))
+
+        let snakeRange = nsText.range(of: "user_id")
+        XCTAssertTrue(MacOSNLPEngine.isImmuneToken("user_id", at: snakeRange, in: text))
+    }
+
+    func testMacOSNLPEngineFusedWordsAndContractionTypos() {
+        let text = "We have alot of work and dont want to rush incase we cant finish."
+        let issues = MacOSNLPEngine.analyzeLocally(text: text, caretUTF16Location: nil)
+
+        XCTAssertTrue(issues.contains(where: { $0.original == "alot" && $0.replacement == "a lot" }))
+        XCTAssertTrue(issues.contains(where: { $0.original == "dont" && $0.replacement == "don't" }))
+        XCTAssertTrue(issues.contains(where: { $0.original == "incase" && $0.replacement == "in case" }))
+        XCTAssertTrue(issues.contains(where: { $0.original == "cant" && $0.replacement == "can't" }))
+    }
+
+    func testConvertDOMSelectionToAXValueOffsetInSlackBullets() {
+        let text = "Not sure what's going on here:\n• Let try this\n• Let also try his"
+        let ns = text as NSString
+
+        // Line 0: "Not sure what's going on here:\n" (31 chars)
+        // Line 1: "• Let try this\n" (15 chars in AX: 2 bullet units, 13 chars in DOM)
+        // Line 2: "• Let also try his" (18 chars in AX: 2 bullet units, 16 chars in DOM)
+
+        // Line 1: In DOM, marker is 1 unit at 31, "Let" starts at 32. In AX, "Let" is at 31 + 2 ("• ") = 33
+        let line1StartAX = AXEngine.convertDOMSelectionToAXValueOffset(domLocation: 32, in: text)
+        XCTAssertEqual(line1StartAX, 33)
+        XCTAssertEqual(ns.substring(with: NSRange(location: line1StartAX, length: 3)), "Let")
+
+        // Line 2: In DOM, line 1 is 14 chars (31 + 14 = 45). Line 2 marker is at 45, "Let" starts at 46.
+        // In AX: line 2 starts at 46, "Let" is at 46 + 2 ("• ") = 48!
+        let line2StartAX = AXEngine.convertDOMSelectionToAXValueOffset(domLocation: 46, in: text)
+        XCTAssertEqual(line2StartAX, 48)
+        XCTAssertEqual(ns.substring(with: NSRange(location: line2StartAX, length: 3)), "Let")
+
+        // Line 1 bullet-initial detection on text starting with "• Let try this"
+        let line1Only = "• Let try this"
+        let l1Issues = MacOSNLPEngine.analyzeLocally(text: line1Only, caretUTF16Location: nil)
+        XCTAssertTrue(l1Issues.contains(where: { $0.original == "Let try" && $0.replacement == "Let's try" }))
+    }
+
+    func testWordBoundaryRejectionPreventsPartialWordReplacement() {
+        let text = "Hello this is a tste"
+        // "tst" is an exact substring of "tste", but NOT a whole word.
+        let range = AXEngine.findBestOccurrenceRange(of: "tst", preferredUTF16Location: 16, in: text)
+        XCTAssertEqual(range.location, NSNotFound, "Must NOT match 'tst' inside 'tste'")
+
+        // In resolveIssues:
+        let raw = [ProofreadResult.RawIssue(original: "tst", replacement: "test", category: "correctness", explanation: "Typo.")]
+        let resolved = GeminiService.resolveIssues(raw, in: text, dictionary: [])
+        XCTAssertTrue(resolved.isEmpty, "resolveIssues must reject 'tst' when text contains 'tste'")
+    }
+
+    @MainActor
+    func testHoverPeekStateAndAutoDismissFlags() {
+        let coordinator = WritingAssistantCoordinator()
+        XCTAssertFalse(coordinator.openedByHover)
+        XCTAssertFalse(coordinator.isPopoverExpanded)
+
+        // 1. Hover peek activates dialog
+        coordinator.openedByHover = true
+        coordinator.isPopoverExpanded = true
+        XCTAssertTrue(coordinator.openedByHover)
+        XCTAssertTrue(coordinator.isPopoverExpanded)
+
+        // 2. User clicks on the pill/dialog to pin it -> openedByHover must clear so it won't auto-close on mouseout
+        coordinator.openedByHover = false
+        XCTAssertFalse(coordinator.openedByHover)
+        XCTAssertTrue(coordinator.isPopoverExpanded)
+
+        // 3. Re-enter hover peek mode and test acceptAllIssues clears openedByHover
+        coordinator.openedByHover = true
+        coordinator.acceptAllIssues()
+        XCTAssertFalse(coordinator.openedByHover)
+        XCTAssertFalse(coordinator.isPopoverExpanded)
+
+        // 4. Test single issue acceptance resets hover state upon clearing:
+        let issue1 = WritingIssue(original: "foo", replacement: "bar", category: .correctness, explanation: "e1")
+        coordinator.openedByHover = true
+        coordinator.isPopoverExpanded = true
+        coordinator.acceptIssue(issue1)
+        // With 0 remaining in empty context, acceptIssue clears it:
+        XCTAssertFalse(coordinator.openedByHover)
+        XCTAssertFalse(coordinator.isPopoverExpanded)
+
+        // 5. Hotkey toggle clears openedByHover:
+        coordinator.openedByHover = true
+        coordinator.isPopoverExpanded = true
+        coordinator.togglePopover()
+        XCTAssertFalse(coordinator.openedByHover)
+        XCTAssertFalse(coordinator.isPopoverExpanded)
+    }
+
+    @MainActor
+    func testOpenWritingPadToRewriteExtractsContextAndClosesPopover() {
+        let coordinator = WritingAssistantCoordinator()
+        var openedPadCalled = false
+        coordinator.onOpenWritingPad = {
+            openedPadCalled = true
+        }
+
+        // Simulate context with active text
+        let context = FocusedTextContext(
+            appName: "Slack",
+            bundleID: "com.tinyspeck.slackmacgap",
+            pid: 1234,
+            fullText: "Here is a full paragraph to rewrite in Writing Pad.",
+            selectedText: "full paragraph to rewrite",
+            selectedRange: NSRange(location: 10, length: 25),
+            anchorAppKitPoint: CGPoint(x: 200, y: 300)
+        )
+        coordinator.axEngineDidUpdateContext(context)
+        coordinator.isPopoverExpanded = true
+
+        coordinator.openWritingPadToRewrite()
+
+        XCTAssertTrue(openedPadCalled)
+        XCTAssertFalse(coordinator.isPopoverExpanded, "Floating dialog must close when opening Writing Pad to rewrite")
+        XCTAssertEqual(coordinator.incomingWritingPadText, "full paragraph to rewrite", "Selected text takes priority to bring to Writing Pad")
+
+        // Test without selection: falls back to activeParagraph/fullText
+        let contextNoSelection = FocusedTextContext(
+            appName: "Slack",
+            bundleID: "com.tinyspeck.slackmacgap",
+            pid: 1234,
+            fullText: "Single active line of text.",
+            selectedText: nil,
+            selectedRange: NSRange(location: 0, length: 0),
+            anchorAppKitPoint: CGPoint(x: 200, y: 300)
+        )
+        coordinator.axEngineDidUpdateContext(contextNoSelection)
+        coordinator.openWritingPadToRewrite()
+        XCTAssertEqual(coordinator.incomingWritingPadText, "Single active line of text.")
+    }
+
+    func testSentenceSegmentationAndIncrementalSentenceCacheWhileTyping() {
+        let settings = AppSettings()
+        let service = GeminiService(settings: settings)
+        service.clearCache()
+
+        let initialText = "Update:\n• Let try this\n• Everything looks good"
+        let resolved = GeminiService.resolveIssues(
+            [ProofreadResult.RawIssue(original: "Let try", replacement: "Let's try", category: "correctness", explanation: "Use Let's.")],
+            in: initialText,
+            dictionary: []
+        )
+        service.storeCache(resolved, for: initialText)
+
+        // Now user inserts a prefix on line 1 ("Quick Update:\n") and starts typing a 3rd bullet
+        let updatedText = "Quick Update:\n• Let try this\n• Everything looks good\n• Typing more"
+        let incrementalIssues = service.cachedIssuesForUnchangedSentences(in: updatedText)
+
+        XCTAssertEqual(incrementalIssues.count, 1)
+        XCTAssertEqual(incrementalIssues[0].original, "Let try")
+        let nsUpdated = updatedText as NSString
+        let shiftedRange = NSRange(location: incrementalIssues[0].utf16Location!, length: incrementalIssues[0].utf16Length!)
+        XCTAssertEqual(nsUpdated.substring(with: shiftedRange), "Let try")
     }
 }
 
@@ -1095,6 +1312,522 @@ final class SyntlyEndToEndTests: XCTestCase {
             "Summary:\n• Delayed because traffic is heavy\n• Let's also fix the deployment"
         )
     }
+
+    func testPlainTextChromiumReplacementNeverShiftsOrKeepsStalePartialWords() async throws {
+        // 1. User pauses mid-word at "As I think it not deali"
+        let partialText = "I don't know what's going on but I think this is too slow to work properly. As I think it not deali"
+        let mockElectron = SimulatedSlackBulletAXAccessor(axValueText: partialText)
+        axEngine.elementAccessor = mockElectron
+        axEngine.setTestingFocusedElement(AXUIElementCreateSystemWide())
+
+        MockGeminiURLProtocol.requestHandler = { request in
+            let response = """
+            {
+              "choices": [
+                {
+                  "message": {
+                    "content": "{\\"issues\\": [{\\"original\\": \\"it not deali\\", \\"replacement\\": \\"it's not dealing\\", \\"category\\": \\"correctness\\", \\"explanation\\": \\"Grammar\\"}]}"
+                  }
+                }
+              ]
+            }
+            """
+            let httpResponse = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            return (httpResponse, Data(response.utf8))
+        }
+
+        coordinator.axEngineDidUpdateContext(
+            FocusedTextContext(
+                appName: "Antigravity",
+                bundleID: "com.google.antigravity",
+                pid: 9999,
+                fullText: partialText,
+                selectedRange: NSRange(location: (partialText as NSString).length, length: 0)
+            )
+        )
+        try await Task.sleep(nanoseconds: 220_000_000)
+        XCTAssertEqual(coordinator.issues.count, 1)
+        XCTAssertEqual(coordinator.issues.first?.original, "it not deali")
+
+        // 2. User continues typing "ng with punctuation mark." — stale partial issue "it not deali" must be immediately cleared!
+        let fullSentence = "I don't know what's going on but I think this is too slow to work properly. As I think it not dealing with punctuation mark."
+        mockElectron.axValueText = fullSentence
+        // Simulate delayed/empty kAXSelectedTextAttribute in Electron during window activation
+        mockElectron.forceUnrelatedSelectedText = ""
+
+        MockGeminiURLProtocol.requestHandler = { request in
+            let response = """
+            {
+              "choices": [
+                {
+                  "message": {
+                    "content": "{\\"issues\\": [{\\"original\\": \\"it not dealing\\", \\"replacement\\": \\"it's not dealing\\", \\"category\\": \\"correctness\\", \\"explanation\\": \\"Grammar\\"}]}"
+                  }
+                }
+              ]
+            }
+            """
+            let httpResponse = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            return (httpResponse, Data(response.utf8))
+        }
+
+        coordinator.axEngineDidUpdateContext(
+            FocusedTextContext(
+                appName: "Antigravity",
+                bundleID: "com.google.antigravity",
+                pid: 9999,
+                fullText: fullSentence,
+                selectedRange: NSRange(location: (fullSentence as NSString).length, length: 0)
+            )
+        )
+        // Immediately on keystroke (before network finishes), stale "it not deali" must be removed from coordinator.issues
+        XCTAssertTrue(coordinator.issues.isEmpty, "Stale partial issue 'it not deali' must be cleared immediately when user types 'ng'")
+
+        // 3. Wait for debounced proofread of full sentence and accept "it not dealing" -> "it's not dealing"
+        try await Task.sleep(nanoseconds: 220_000_000)
+        XCTAssertEqual(coordinator.issues.count, 1)
+        XCTAssertEqual(coordinator.issues.first?.original, "it not dealing")
+        XCTAssertEqual(coordinator.issues.first?.utf16Location, 87)
+        XCTAssertEqual(coordinator.issues.first?.utf16Length, 14)
+
+        mockElectron.setRangeCallCount = 0
+        coordinator.acceptIssue(coordinator.issues[0])
+
+        // Plain-text fast path must set range exactly ONCE at (87, 14) without running spiral search or shifting to 85
+        XCTAssertEqual(mockElectron.setRangeCallCount, 1)
+        XCTAssertEqual(mockElectron.selectedRangeInDOM, NSRange(location: 87, length: 14))
+        XCTAssertEqual(
+            mockElectron.axValueText,
+            "I don't know what's going on but I think this is too slow to work properly. As I think it's not dealing with punctuation mark."
+        )
+    }
+
+    func testLocalNLPPunctuationAndQuestionDetection() {
+        // 1. Direct question missing '?' at the end of a multi-sentence input
+        let text1 = "I want to make sure the bug is already fixed but not sure it's fixed or not. Can you make sure about that"
+        // Even when user caret is at the end of the input, the completed question is correctly detected
+        let activeIssues = MacOSNLPEngine.analyzeLocally(text: text1, caretUTF16Location: (text1 as NSString).length)
+        XCTAssertEqual(activeIssues.first?.original, "about that")
+        XCTAssertEqual(activeIssues.first?.replacement, "about that?")
+
+        // If typing is in-progress with an incomplete word (e.g. "tha"), punctuation is suppressed until word finishes
+        let textUnfinished = "Can you make sure about tha"
+        let unfinishedIssues = MacOSNLPEngine.analyzeLocally(text: textUnfinished, caretUTF16Location: (textUnfinished as NSString).length)
+        XCTAssertFalse(unfinishedIssues.contains { $0.replacement.hasSuffix("?") })
+
+        // Once typing settles (caretUTF16Location: nil), flag "about that" -> "about that?"
+        let settledIssues = MacOSNLPEngine.analyzeLocally(text: text1, caretUTF16Location: nil)
+        XCTAssertEqual(settledIssues.count, 1)
+        XCTAssertEqual(settledIssues.first?.original, "about that")
+        XCTAssertEqual(settledIssues.first?.replacement, "about that?")
+        XCTAssertEqual(settledIssues.first?.utf16Location, 95)
+
+        // 2. Direct question ending with '.' instead of '?'
+        let text2 = "Can you make sure about that."
+        let issues2 = MacOSNLPEngine.analyzeLocally(text: text2, caretUTF16Location: nil)
+        XCTAssertEqual(issues2.first?.original, "about that.")
+        XCTAssertEqual(issues2.first?.replacement, "about that?")
+
+        // 3. Stray space before '.' and '?'
+        let text3 = "This is already fixed . Are you sure ?"
+        let issues3 = MacOSNLPEngine.analyzeLocally(text: text3, caretUTF16Location: nil)
+        XCTAssertEqual(issues3.count, 2)
+        XCTAssertEqual(issues3[0].original, "fixed .")
+        XCTAssertEqual(issues3[0].replacement, "fixed.")
+        XCTAssertEqual(issues3[1].original, "sure ?")
+        XCTAssertEqual(issues3[1].replacement, "sure?")
+
+        // 4. Duplicate or conflicting punctuation ("?.", "..", "? .") and meta-mention immunity ("like . or ?")
+        let text4 = "How can we better handle punctuation like . or ? ."
+        let issues4 = MacOSNLPEngine.analyzeLocally(text: text4, caretUTF16Location: nil)
+        XCTAssertFalse(issues4.contains { $0.original == "like ." }, "Should not flag meta-mention 'like . or'")
+
+        let text5 = "It is fixed.. Can you check that?."
+        let issues5 = MacOSNLPEngine.analyzeLocally(text: text5, caretUTF16Location: nil)
+        XCTAssertEqual(issues5.count, 2)
+        XCTAssertEqual(issues5[0].original, "fixed..")
+        XCTAssertEqual(issues5[0].replacement, "fixed.")
+        XCTAssertEqual(issues5[1].original, "that?.")
+        XCTAssertEqual(issues5[1].replacement, "that?")
+
+        // 5. Missing space after period & lowercase sentence start
+        let text6 = "It is fixed.Can you check? Yes. it works."
+        let issues6 = MacOSNLPEngine.analyzeLocally(text: text6, caretUTF16Location: nil)
+        XCTAssertEqual(issues6.count, 2)
+        XCTAssertEqual(issues6[0].original, "fixed.Can")
+        XCTAssertEqual(issues6[0].replacement, "fixed. Can")
+        XCTAssertEqual(issues6[1].original, "Yes. it")
+        XCTAssertEqual(issues6[1].replacement, "Yes. It")
+
+        // 6. Complete declarative sentence missing terminal period (.)
+        let text7 = "I want to test what's going on but I am not sure what it's gonna be. Try to think about the way to make some test"
+        let issues7 = MacOSNLPEngine.analyzeLocally(text: text7, caretUTF16Location: (text7 as NSString).length)
+        XCTAssertEqual(issues7.first?.original, "some test")
+        XCTAssertEqual(issues7.first?.replacement, "some test.")
+        XCTAssertEqual(issues7.first?.explanation, "Add a period '.' at the end of the sentence.")
+    }
+
+    @MainActor
+    func testSequentialAltTabFixesOverlappingAndQuestionPunctuationCleanly() async throws {
+        settings.enableLocalSpellcheck = true
+        let initialText = "I want to make sure the bug is alrady fix but not sure it's fixed or not. Can you make sure about that"
+        let mockElectron = SimulatedSlackBulletAXAccessor(axValueText: initialText)
+        axEngine.elementAccessor = mockElectron
+        axEngine.setTestingFocusedElement(AXUIElementCreateSystemWide())
+
+        // Simulate Gemini returning "alrady fix" -> "already fixed" (overlapping local spellcheck's "alrady" -> "already")
+        MockGeminiURLProtocol.requestHandler = { request in
+            let responseJSON = """
+            {
+              "choices": [{
+                "message": {
+                  "content": "{\\"issues\\": [{\\"original\\": \\"alrady fix\\", \\"replacement\\": \\"already fixed\\", \\"category\\": \\"correctness\\", \\"explanation\\": \\"Fix spelling and verb form.\\"}]}"
+                }
+              }]
+            }
+            """
+            let http = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            return (http, Data(responseJSON.utf8))
+        }
+
+        // User finishes typing the sentence
+        coordinator.axEngineDidUpdateContext(
+            FocusedTextContext(
+                appName: "Antigravity",
+                bundleID: "com.google.antigravity",
+                pid: 999,
+                fullText: initialText,
+                selectedText: "",
+                selectedRange: NSRange(location: (initialText as NSString).length, length: 0)
+            )
+        )
+
+        // Wait for debounced proofread + settled local NLP pass
+        try await Task.sleep(nanoseconds: 220_000_000)
+
+        // Must have exactly 2 non-overlapping issues:
+        // 1. "alrady fix" -> "already fixed" (at 31, length 10) -- local "alrady" (at 31, length 6) must be deduplicated!
+        // 2. "about that" -> "about that?" (at 92, length 10) -- detected by settled local NLP Pass 7!
+        XCTAssertEqual(coordinator.issues.count, 2)
+        XCTAssertEqual(coordinator.issues[0].original, "alrady fix")
+        XCTAssertEqual(coordinator.issues[0].replacement, "already fixed")
+        XCTAssertEqual(coordinator.issues[0].utf16Location, 31)
+        XCTAssertEqual(coordinator.issues[1].original, "about that")
+        XCTAssertEqual(coordinator.issues[1].replacement, "about that?")
+        XCTAssertEqual(coordinator.issues[1].utf16Location, 92)
+
+        // Alt+Tab #1: Accepts "alrady fix" -> "already fixed"
+        coordinator.acceptIssue(coordinator.issues[0])
+        XCTAssertEqual(
+            mockElectron.axValueText,
+            "I want to make sure the bug is already fixed but not sure it's fixed or not. Can you make sure about that"
+        )
+
+        // Only 1 issue ("about that" -> "about that?" shifted by +3 to utf16Location 95) should remain
+        XCTAssertEqual(coordinator.issues.count, 1)
+        XCTAssertEqual(coordinator.issues[0].original, "about that")
+        XCTAssertEqual(coordinator.issues[0].utf16Location, 95)
+
+        // Alt+Tab #2: Accepts "about that" -> "about that?"
+        coordinator.acceptIssue(coordinator.issues[0])
+        XCTAssertEqual(
+            mockElectron.axValueText,
+            "I want to make sure the bug is already fixed but not sure it's fixed or not. Can you make sure about that?"
+        )
+        XCTAssertTrue(coordinator.issues.isEmpty)
+        XCTAssertEqual(coordinator.pillState, PillVisualState.allClear)
+    }
+
+    @MainActor
+    func testUserScreenshotsPic1And2TerminalPeriodAcceptFlow() async throws {
+        settings.enableLocalSpellcheck = true
+        let initialText = "I want to test what going on but I am not sure what it's gonna be. Try to think about the way to make some test"
+        let mockElectron = SimulatedSlackBulletAXAccessor(axValueText: initialText)
+        axEngine.elementAccessor = mockElectron
+        axEngine.setTestingFocusedElement(AXUIElementCreateSystemWide())
+
+        MockGeminiURLProtocol.requestHandler = { request in
+            let responseJSON = """
+            {
+              "choices": [{
+                "message": {
+                  "content": "{\\"issues\\": [{\\"original\\": \\"what going on\\", \\"replacement\\": \\"what's going on\\", \\"category\\": \\"correctness\\", \\"explanation\\": \\"Grammar\\"}, {\\"original\\": \\"some test\\", \\"replacement\\": \\"some test.\\", \\"category\\": \\"correctness\\", \\"explanation\\": \\"Terminal period\\"}]}"
+                }
+              }]
+            }
+            """
+            let http = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            return (http, Data(responseJSON.utf8))
+        }
+
+        coordinator.axEngineDidUpdateContext(
+            FocusedTextContext(
+                appName: "Antigravity",
+                bundleID: "com.google.antigravity",
+                pid: 999,
+                fullText: initialText,
+                selectedText: "",
+                selectedRange: NSRange(location: (initialText as NSString).length, length: 0)
+            )
+        )
+
+        try await Task.sleep(nanoseconds: 220_000_000)
+
+        // Both "what going on" and "some test" -> "some test." must be detected
+        XCTAssertEqual(coordinator.issues.count, 2)
+        XCTAssertEqual(coordinator.issues[0].original, "what going on")
+        XCTAssertEqual(coordinator.issues[1].original, "some test")
+
+        // 1. Accept "what going on" -> "what's going on"
+        coordinator.acceptIssue(coordinator.issues[0])
+        XCTAssertEqual(
+            mockElectron.axValueText,
+            "I want to test what's going on but I am not sure what it's gonna be. Try to think about the way to make some test"
+        )
+
+        // Terminal punctuation issue "some test" -> "some test." must STILL be present
+        XCTAssertEqual(coordinator.issues.count, 1)
+        XCTAssertEqual(coordinator.issues[0].original, "some test")
+        XCTAssertEqual(coordinator.issues[0].replacement, "some test.")
+
+        // 2. Sequential Alt-Tab accepts terminal period
+        coordinator.acceptIssue(coordinator.issues[0])
+        XCTAssertEqual(
+            mockElectron.axValueText,
+            "I want to test what's going on but I am not sure what it's gonna be. Try to think about the way to make some test."
+        )
+        XCTAssertTrue(coordinator.issues.isEmpty)
+        XCTAssertEqual(coordinator.pillState, PillVisualState.allClear)
+    }
+
+    @MainActor
+    func testUserScreenshotPic8StuckCheckingAndContractionHomophone() async throws {
+        settings.enableLocalSpellcheck = true
+        let text = "Lets try another time. I want to eat stake but not sure how to spell it."
+
+        // 1. Verify instant local detection finds both "Lets" -> "Let's" and "eat stake" -> "eat steak"
+        let localIssues = MacOSNLPEngine.analyzeLocally(text: text, caretUTF16Location: (text as NSString).length)
+        XCTAssertTrue(localIssues.contains { $0.original == "Lets" && $0.replacement == "Let's" })
+        XCTAssertTrue(localIssues.contains { $0.original == "eat stake" && $0.replacement == "eat steak" })
+
+        // 2. Verify coordinator never gets stuck in .checking when API fails or hangs
+        let mockElectron = SimulatedSlackBulletAXAccessor(axValueText: text)
+        axEngine.elementAccessor = mockElectron
+        axEngine.setTestingFocusedElement(AXUIElementCreateSystemWide())
+
+        MockGeminiURLProtocol.requestHandler = { _ in
+            throw URLError(.timedOut)
+        }
+
+        coordinator.axEngineDidUpdateContext(
+            FocusedTextContext(
+                appName: "Antigravity",
+                bundleID: "com.google.antigravity",
+                pid: 999,
+                fullText: text,
+                selectedText: "",
+                selectedRange: NSRange(location: (text as NSString).length, length: 0)
+            )
+        )
+
+        try await Task.sleep(nanoseconds: 220_000_000)
+
+        // Pill must NOT be stuck in .checking; it must reflect local fallback issues
+        if case .issuesFound(let count, _) = coordinator.pillState {
+            XCTAssertGreaterThanOrEqual(count, 1)
+        } else {
+            XCTFail("Pill state should be issuesFound, but got \(coordinator.pillState)")
+        }
+    }
+
+    @MainActor
+    func testSequentialAltTabDeclarativePeriodPunctuationAndWordFixes() async throws {
+        settings.enableLocalSpellcheck = true
+        let initialText = "I want to test what going on but I am not sure what it's gonna be. Try to think about the way to make some test"
+        let mockElectron = SimulatedSlackBulletAXAccessor(axValueText: initialText)
+        axEngine.elementAccessor = mockElectron
+        axEngine.setTestingFocusedElement(AXUIElementCreateSystemWide())
+
+        MockGeminiURLProtocol.requestHandler = { request in
+            let responseJSON = """
+            {
+              "choices": [{
+                "message": {
+                  "content": "{\\"issues\\": [{\\"original\\": \\"what going\\", \\"replacement\\": \\"what's going\\", \\"category\\": \\"correctness\\", \\"explanation\\": \\"Fix grammar.\\"}]}"
+                }
+              }]
+            }
+            """
+            let http = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            return (http, Data(responseJSON.utf8))
+        }
+
+        coordinator.axEngineDidUpdateContext(
+            FocusedTextContext(
+                appName: "Antigravity",
+                bundleID: "com.google.antigravity",
+                pid: 999,
+                fullText: initialText,
+                selectedText: "",
+                selectedRange: NSRange(location: (initialText as NSString).length, length: 0)
+            )
+        )
+
+        try await Task.sleep(nanoseconds: 220_000_000)
+
+        // Must have:
+        // 1. "what going" -> "what's going" (at 15, length 10)
+        // 2. "some test" -> "some test." (at 104, length 9) -- missing period on complete declarative sentence!
+        XCTAssertEqual(coordinator.issues.count, 2)
+        XCTAssertEqual(coordinator.issues[0].original, "what going")
+        XCTAssertEqual(coordinator.issues[0].replacement, "what's going")
+        XCTAssertEqual(coordinator.issues[1].original, "some test")
+        XCTAssertEqual(coordinator.issues[1].replacement, "some test.")
+
+        // Alt+Tab #1: Accepts "what going" -> "what's going"
+        coordinator.acceptIssue(coordinator.issues[0])
+        XCTAssertEqual(
+            mockElectron.axValueText,
+            "I want to test what's going on but I am not sure what it's gonna be. Try to think about the way to make some test"
+        )
+
+        // Exactly 1 issue remains, shifted by +2 (utf16Location: 104)
+        XCTAssertEqual(coordinator.issues.count, 1)
+        XCTAssertEqual(coordinator.issues[0].original, "some test")
+        XCTAssertEqual(coordinator.issues[0].replacement, "some test.")
+        XCTAssertEqual(coordinator.issues[0].utf16Location, 104)
+
+        // Alt+Tab #2: Accepts "some test" -> "some test."
+        coordinator.acceptIssue(coordinator.issues[0])
+        XCTAssertEqual(
+            mockElectron.axValueText,
+            "I want to test what's going on but I am not sure what it's gonna be. Try to think about the way to make some test."
+        )
+        XCTAssertTrue(coordinator.issues.isEmpty)
+        XCTAssertEqual(coordinator.pillState, PillVisualState.allClear)
+    }
+
+    @MainActor
+    func testMovingCursorBeforeAcceptNeverCorruptsWord() async throws {
+        settings.enableLocalSpellcheck = true
+        let initialText = "Hello this is a tste."
+        let mockElectron = SimulatedSlackBulletAXAccessor(axValueText: initialText)
+        axEngine.elementAccessor = mockElectron
+        axEngine.setTestingFocusedElement(AXUIElementCreateSystemWide())
+
+        MockGeminiURLProtocol.requestHandler = { request in
+            let responseJSON = """
+            {
+              "choices": [{
+                "message": {
+                  "content": "{\\"issues\\": [{\\"original\\": \\"tste\\", \\"replacement\\": \\"test\\", \\"category\\": \\"correctness\\", \\"explanation\\": \\"Correct spelling of test.\\"}]}"
+                }
+              }]
+            }
+            """
+            let http = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            return (http, Data(responseJSON.utf8))
+        }
+
+        // 1. User types "Hello this is a tste."
+        coordinator.axEngineDidUpdateContext(
+            FocusedTextContext(
+                appName: "Antigravity",
+                bundleID: "com.google.antigravity",
+                pid: 999,
+                fullText: initialText,
+                selectedText: "",
+                selectedRange: NSRange(location: (initialText as NSString).length, length: 0)
+            )
+        )
+
+        // 2. User moves cursor elsewhere (e.g. index 5, before "this"). "tste" is now settled!
+        mockElectron.selectedRangeInDOM = NSRange(location: 5, length: 0)
+        coordinator.axEngineDidUpdateContext(
+            FocusedTextContext(
+                appName: "Antigravity",
+                bundleID: "com.google.antigravity",
+                pid: 999,
+                fullText: initialText,
+                selectedText: "",
+                selectedRange: NSRange(location: 5, length: 0)
+            )
+        )
+
+        try await Task.sleep(nanoseconds: 220_000_000)
+
+        // Gemini proofread surfaces "tste" -> "test" on the card
+        XCTAssertEqual(coordinator.issues.count, 1)
+        XCTAssertEqual(coordinator.issues[0].original, "tste")
+        XCTAssertEqual(coordinator.issues[0].replacement, "test")
+
+        // 3. User clicks Accept on the suggestion card
+        coordinator.acceptIssue(coordinator.issues[0])
+
+        // Must cleanly replace "tste" with "test" -> "Hello this is a test." (NEVER "teste" or corrupted offset)
+        XCTAssertEqual(mockElectron.axValueText, "Hello this is a test.")
+        XCTAssertTrue(coordinator.issues.isEmpty)
+        XCTAssertEqual(coordinator.pillState, PillVisualState.allClear)
+    }
+
+    @MainActor
+    func testSequentialAltTabOnGrammarSentenceNeverCorruptsCompositeWords() async throws {
+        settings.enableLocalSpellcheck = true
+        let initialText = "It seem to not dealing with \".\" right now according to the screenshot. I type on first pic, and click alt-tab then it just fix word, not puctuation. Can you look into it?"
+        let mockElectron = SimulatedSlackBulletAXAccessor(axValueText: initialText)
+        axEngine.elementAccessor = mockElectron
+        axEngine.setTestingFocusedElement(AXUIElementCreateSystemWide())
+
+        MockGeminiURLProtocol.requestHandler = { request in
+            let responseJSON = """
+            {
+              "choices": [{
+                "message": {
+                  "content": "{\\"issues\\": [{\\"original\\": \\"seem to not dealing\\", \\"replacement\\": \\"seems not to deal\\", \\"category\\": \\"correctness\\", \\"explanation\\": \\"Grammar.\\"}, {\\"original\\": \\"puctuation\\", \\"replacement\\": \\"punctuation\\", \\"category\\": \\"correctness\\", \\"explanation\\": \\"Spelling.\\"}]}"
+                }
+              }]
+            }
+            """
+            let http = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            return (http, Data(responseJSON.utf8))
+        }
+
+        coordinator.axEngineDidUpdateContext(
+            FocusedTextContext(
+                appName: "Antigravity",
+                bundleID: "com.google.antigravity",
+                pid: 999,
+                fullText: initialText,
+                selectedText: "",
+                selectedRange: NSRange(location: (initialText as NSString).length, length: 0)
+            )
+        )
+
+        try await Task.sleep(nanoseconds: 220_000_000)
+
+        // Must have broad phrase "seem to not dealing" -> "seems not to deal", and "puctuation" -> "punctuation"
+        XCTAssertEqual(coordinator.issues.count, 2)
+        XCTAssertEqual(coordinator.issues[0].original, "seem to not dealing")
+        XCTAssertEqual(coordinator.issues[0].replacement, "seems not to deal")
+        XCTAssertEqual(coordinator.issues[1].original, "puctuation")
+        XCTAssertEqual(coordinator.issues[1].replacement, "punctuation")
+
+        // Alt+Tab #1: Accepts "seem to not dealing" -> "seems not to deal"
+        coordinator.acceptIssue(coordinator.issues[0])
+        XCTAssertFalse(mockElectron.axValueText.contains("seemsto"))
+        XCTAssertFalse(mockElectron.axValueText.contains("dealg"))
+        XCTAssertTrue(mockElectron.axValueText.contains("It seems not to deal with"))
+
+        // Alt+Tab #2: Accepts "puctuation" -> "punctuation"
+        XCTAssertEqual(coordinator.issues.count, 1)
+        XCTAssertEqual(coordinator.issues[0].original, "puctuation")
+        coordinator.acceptIssue(coordinator.issues[0])
+
+        XCTAssertFalse(mockElectron.axValueText.contains("puctuation"))
+        XCTAssertTrue(mockElectron.axValueText.contains("not punctuation. Can you look into it?"))
+        XCTAssertTrue(coordinator.issues.isEmpty)
+        XCTAssertEqual(coordinator.pillState, PillVisualState.allClear)
+    }
 }
 
 // MARK: - Simulated Slack / Chromium Rich-Text List AXUIElement Accessor
@@ -1108,6 +1841,7 @@ final class SimulatedSlackBulletAXAccessor: AXElementAccessing {
     var selectedRangeInDOM: NSRange = NSRange(location: 0, length: 0)
     var collapseCRLFInDOM: Bool
     var forceUnrelatedSelectedText: String?
+    var setRangeCallCount: Int = 0
 
     init(axValueText: String, collapseCRLFInDOM: Bool = false) {
         self.axValueText = axValueText
@@ -1183,6 +1917,7 @@ final class SimulatedSlackBulletAXAccessor: AXElementAccessing {
 
     func setRange(_ element: AXUIElement, attribute: String, range: NSRange) -> AXError {
         if attribute == (kAXSelectedTextRangeAttribute as String) {
+            setRangeCallCount += 1
             let nsDOM = domSelectionText as NSString
             let clampedLoc = max(0, min(range.location, nsDOM.length))
             let clampedLen = max(0, min(range.length, nsDOM.length - clampedLoc))

@@ -414,6 +414,19 @@ public struct SettingsView: View {
                 }
             }
 
+            Section("Floating Pill Size") {
+                Picker("Pill Size:", selection: $settings.pillSize) {
+                    ForEach(PillSize.allCases) { size in
+                        Text(size.displayName).tag(size)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text("Controls the size of the floating manga thought bubble indicator near your typing cursor. Default is Compact (the original compact size).")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("System & Dock") {
                 Toggle("Show App Icon in Dock", isOn: $settings.showDockIcon)
                 Text("When disabled, Synt(ax)ly runs quietly in your menu bar without occupying space in the Dock.")

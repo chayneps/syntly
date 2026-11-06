@@ -8,6 +8,7 @@ public enum LLMServiceError: LocalizedError {
     case invalidResponse(String)
     case httpError(statusCode: Int, message: String)
     case networkError(String)
+    case timeout
 
     public var errorDescription: String? {
         switch self {
@@ -21,6 +22,8 @@ public enum LLMServiceError: LocalizedError {
             return "API HTTP \(code): \(msg)"
         case .networkError(let msg):
             return "Network error: \(msg)"
+        case .timeout:
+            return "Analysis timed out after 5 seconds."
         }
     }
 }
@@ -75,11 +78,60 @@ public final class LLMService {
             customInstruction: settings.customStyleInstruction
         )
         cacheLock.lock()
-        defer { cacheLock.unlock() }
         if cache.count >= maxCacheEntries, let firstKey = cache.keys.first {
             cache.removeValue(forKey: firstKey)
         }
         cache[key] = issues
+
+        // Also index issues by completed sentence (`NLTokenizer`) for incremental Check-While-Typing reuse
+        let segments = MacOSNLPEngine.segmentSentences(in: text)
+        if segments.count > 1 {
+            for seg in segments {
+                let trimmedSeg = seg.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let isCompletedSentence = trimmedSeg.hasSuffix(".") || trimmedSeg.hasSuffix("!") || trimmedSeg.hasSuffix("?") || seg.text.hasSuffix("\n")
+                guard isCompletedSentence else { continue }
+
+                let segIssues: [WritingIssue] = issues.compactMap { issue in
+                    guard let loc = issue.utf16Location,
+                          let len = issue.utf16Length,
+                          loc >= seg.utf16Range.location,
+                          loc + len <= seg.utf16Range.location + seg.utf16Range.length else {
+                        return nil
+                    }
+                    var localCopy = issue
+                    localCopy.utf16Location = loc - seg.utf16Range.location
+                    return localCopy
+                }
+                let segKey = Self.cacheKey(
+                    for: seg.text,
+                    dialect: settings.dialect,
+                    dictionary: settings.personalDictionary,
+                    customInstruction: settings.customStyleInstruction
+                )
+                cache[segKey] = segIssues
+            }
+        }
+        cacheLock.unlock()
+    }
+
+    /// Retrieves cached issues for any sentences in `text` that have already been analyzed,
+    /// shifting their `utf16Location` to match their current position in `text`.
+    public func cachedIssuesForUnchangedSentences(in text: String) -> [WritingIssue] {
+        let segments = MacOSNLPEngine.segmentSentences(in: text)
+        guard !segments.isEmpty else { return [] }
+
+        var collected: [WritingIssue] = []
+        for seg in segments {
+            if let segIssues = cachedIssues(for: seg.text) {
+                for var issue in segIssues {
+                    if let relLoc = issue.utf16Location {
+                        issue.utf16Location = seg.utf16Range.location + relLoc
+                    }
+                    collected.append(issue)
+                }
+            }
+        }
+        return collected
     }
 
     public func clearCache() {
@@ -88,63 +140,15 @@ public final class LLMService {
         cache.removeAll()
     }
 
-    // MARK: - Instant Local Spellcheck Pass (<5ms)
+    // MARK: - Instant Local macOS NLP & Spellcheck Pass (<3ms)
 
-    public func runLocalSpellcheck(on text: String) -> [WritingIssue] {
-        guard settings.enableLocalSpellcheck else { return [] }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count >= 3 else { return [] }
-
-        let checker = NSSpellChecker.shared
-        let nsString = text as NSString
-        var issues: [WritingIssue] = []
-        var searchOffset = 0
-
-        while searchOffset < nsString.length {
-            let misspelledRange = checker.checkSpelling(
-                of: text,
-                startingAt: searchOffset,
-                language: nil,
-                wrap: false,
-                inSpellDocumentWithTag: 0,
-                wordCount: nil
-            )
-
-            guard misspelledRange.location != NSNotFound, misspelledRange.length > 0 else {
-                break
-            }
-
-            let word = nsString.substring(with: misspelledRange)
-            searchOffset = misspelledRange.location + misspelledRange.length
-
-            // Skip words in personal dictionary
-            if settings.personalDictionary.contains(where: { $0.caseInsensitiveCompare(word) == .orderedSame }) {
-                continue
-            }
-
-            let guesses = checker.guesses(
-                forWordRange: misspelledRange,
-                in: text,
-                language: nil,
-                inSpellDocumentWithTag: 0
-            ) ?? []
-
-            if let topGuess = guesses.first, topGuess != word {
-                issues.append(
-                    WritingIssue(
-                        original: word,
-                        replacement: topGuess,
-                        category: .correctness,
-                        explanation: "Possible spelling mistake.",
-                        utf16Location: misspelledRange.location,
-                        utf16Length: misspelledRange.length,
-                        isLocalSpellcheck: true
-                    )
-                )
-            }
-        }
-
-        return issues
+    public func runLocalSpellcheck(on text: String, caretUTF16Location: Int? = nil) -> [WritingIssue] {
+        return MacOSNLPEngine.analyzeLocally(
+            text: text,
+            caretUTF16Location: caretUTF16Location,
+            dictionary: settings.personalDictionary,
+            enableSpellcheck: settings.enableLocalSpellcheck
+        )
     }
 
     // MARK: - Live Proofread (Structured JSON Issues)
@@ -330,7 +334,7 @@ public final class LLMService {
 
         CORE PRINCIPLES:
         1. High Precision & Minimal Edits: Fix genuine mistakes (spelling, grammar, punctuation, misused words). Do NOT rewrite casual, informal, or stylistic phrasing if it is already grammatically valid.
-        2. In-Progress Typing Awareness: The user is actively typing in real-time. Do NOT flag sentence fragments, trailing clauses, or lack of final punctuation at the very end of the input if the sentence appears in-progress.
+        2. Punctuation & In-Progress Awareness: Do NOT flag an incomplete trailing clause when the user is clearly mid-phrase (e.g. ending with "to", "the", "and", "because"). However, DO flag missing terminal punctuation at the end of complete standalone sentences: missing periods (.) at the end of complete declarative/imperative sentences (e.g. "make some test" -> original: "some test", replacement: "some test."), missing question marks (?) at the end of complete direct questions (e.g. "Can you make sure about that" -> original: "about that", replacement: "about that?"), wrong terminal punctuation on direct questions (e.g. "about that." -> "about that?"), extra spaces before punctuation (e.g. "test ." -> "test.", "that ?" -> "that?"), and missing spaces or capitalization after periods. When adding or fixing punctuation at the end of a sentence, always include the last 2 words in "original" and "replacement" so the match location is unique.
         3. Code & Identifier Immunity: Never flag or alter URLs, email addresses, file paths, code snippets, camelCase/snake_case variable names, markdown formatting, or @mentions.
         4. Unique Verbatim Matching: "original" MUST be an exact, case-sensitive substring from the input text. If a word appears multiple times, include 1–2 adjacent context words so "original" appears EXACTLY ONCE in the text.
         5. Drop-in Replacement: "replacement" MUST be the exact drop-in replacement for "original" with matching capitalization and punctuation.
@@ -449,7 +453,6 @@ public final class LLMService {
         let nsText = sourceText as NSString
         let normNsText = AXEngine.normalizeTypographicCharacters(sourceText) as NSString
         var results: [WritingIssue] = []
-        var usedLocations = Set<Int>()
 
         for raw in rawIssues {
             let stripped = stripSharedListMarkerPrefix(original: raw.original, replacement: raw.replacement)
@@ -465,30 +468,49 @@ public final class LLMService {
 
             let category = IssueCategory(rawValue: raw.category.lowercased()) ?? .correctness
 
-            // Find occurrence in sourceText, preferring whole-word boundary matches first
+            // Collect all whole-word occurrences in sourceText
             var searchRange = NSRange(location: 0, length: normNsText.length)
-            var matchedRange: NSRange?
-            var fallbackPartialRange: NSRange?
+            var candidateRanges: [NSRange] = []
 
             while searchRange.location < normNsText.length {
                 let found = normNsText.range(of: normOrig, options: [], range: searchRange)
                 guard found.location != NSNotFound else { break }
-                if !usedLocations.contains(found.location) {
-                    if AXEngine.isWholeWordMatch(range: found, of: normOrig, in: normNsText) {
-                        matchedRange = found
-                        usedLocations.insert(found.location)
-                        break
-                    } else if fallbackPartialRange == nil {
-                        fallbackPartialRange = found
-                    }
+                if AXEngine.isWholeWordMatch(range: found, of: normOrig, in: normNsText) {
+                    candidateRanges.append(found)
                 }
                 let nextLoc = found.location + max(1, found.length)
                 searchRange = NSRange(location: nextLoc, length: normNsText.length - nextLoc)
             }
 
-            if matchedRange == nil, let partial = fallbackPartialRange {
-                matchedRange = partial
-                usedLocations.insert(partial.location)
+            guard !candidateRanges.isEmpty else { continue }
+
+            // When adding terminal punctuation ("?", ".", "!"), prefer the last occurrence in the sentence/text
+            let isTerminalPunctuationAddition = (repl == orig + "?" || repl == orig + "." || repl == orig + "!")
+            let orderedCandidates = isTerminalPunctuationAddition ? Array(candidateRanges.reversed()) : candidateRanges
+
+            var matchedRange: NSRange?
+            for found in orderedCandidates {
+                let overlappingIndices = results.indices.filter { idx in
+                    let existingRange = NSRange(
+                        location: results[idx].utf16Location ?? 0,
+                        length: results[idx].utf16Length ?? (results[idx].original as NSString).length
+                    )
+                    return NSIntersectionRange(existingRange, found).length > 0
+                }
+                if overlappingIndices.isEmpty {
+                    matchedRange = found
+                    break
+                } else if overlappingIndices.allSatisfy({ idx in
+                    let existingLen = results[idx].utf16Length ?? (results[idx].original as NSString).length
+                    return found.length > existingLen
+                }) {
+                    // Replace narrower sub-issue(s) with this broader multi-word phrase issue
+                    for idx in overlappingIndices.reversed() {
+                        results.remove(at: idx)
+                    }
+                    matchedRange = found
+                    break
+                }
             }
 
             if let range = matchedRange {

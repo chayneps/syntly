@@ -1,66 +1,62 @@
 import SwiftUI
 
-public struct FloatingOverlayView: View {
+public enum OverlayTab: String, CaseIterable {
+    case suggestions = "Suggestions"
+    case openWritingPad = "Open writing pad to rewrite"
+}
+
+// MARK: - App Icon Loader
+
+func loadAppIconImage() -> NSImage? {
+    if let img = NSApp.applicationIconImage, img.isValid {
+        return img
+    }
+    if let url = Bundle.main.url(forResource: "app_icon_1024", withExtension: "png"),
+       let img = NSImage(contentsOf: url) {
+        return img
+    }
+    let devPath = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("assets/app_icon_1024.png")
+    if let img = NSImage(contentsOf: devPath) {
+        return img
+    }
+    return nil
+}
+
+// MARK: - Floating Pill View (Companion)
+
+public struct FloatingPillView: View {
     @ObservedObject var coordinator: WritingAssistantCoordinator
-    @State private var selectedTab: OverlayTab = .suggestions
     @State private var isHovered: Bool = false
     @State private var hasPushedCursor: Bool = false
-
-    public enum OverlayTab: String, CaseIterable {
-        case suggestions = "Suggestions"
-        case rewrite = "Rewrite"
-    }
 
     public init(coordinator: WritingAssistantCoordinator) {
         self.coordinator = coordinator
     }
 
     public var body: some View {
-        Group {
-            if coordinator.isPopoverExpanded {
-                expandedCardView
-            } else {
-                compactIconView
-            }
-        }
-        .frame(
-            width: coordinator.isPopoverExpanded ? 380 : 48,
-            height: coordinator.isPopoverExpanded ? 348 : 48
-        )
-    }
-
-    // MARK: - Compact Top-Left Floating Icon (Manga Thought Bubble)
-
-    private var compactIconView: some View {
+        let size = coordinator.settings.pillSize
         ZStack(alignment: .topTrailing) {
-            // 1. Center Manga Thought Bubble App Icon
-            Group {
-                if let iconImg = loadAppIconImage() {
-                    Image(nsImage: iconImg)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                } else {
-                    // High-contrast fallback manga thought bubble in bright hot pink
-                    ZStack {
-                        Circle()
-                            .fill(Color(red: 0.996, green: 0.008, blue: 0.890))
-                        Text("S")
-                            .font(.system(size: 20, weight: .heavy, design: .rounded))
-                            .foregroundStyle(.white)
-                    }
-                }
-            }
-            .frame(width: 36, height: 36)
-            .scaleEffect(isHovered ? 1.08 : 1.0)
-            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isHovered)
+            // 1. Authentic Manga Thought Bubble App Icon
+            Image(nsImage: StatusBarController.renderMangaBubble(size: size.iconSize))
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: size.iconSize, height: size.iconSize)
+                .scaleEffect(isHovered ? 1.08 : 1.0)
+                .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isHovered)
 
             // 2. Status Badge / Spinner
-            statusBadgeOverlay
+            statusBadgeOverlay(for: size)
         }
-        .frame(width: 48, height: 48)
+        .frame(width: size.panelSize, height: size.panelSize)
         .contentShape(Rectangle())
         .onHover { hovering in
             isHovered = hovering
+            coordinator.handlePillHover(hovering)
             if hovering && !hasPushedCursor {
                 hasPushedCursor = true
                 NSCursor.openHand.push()
@@ -85,7 +81,7 @@ public struct FloatingOverlayView: View {
         case .checking:
             return "Synt(ax)ly — Checking your writing… • Drag to move • Right-click for options"
         case .issuesFound(let count, _):
-            return "Synt(ax)ly — \(count) fix\(count == 1 ? "" : "es") found • Quick-accept: ⌥Tab • Drag to move • Click to view (⌘⇧G) • Right-click for options"
+            return "Synt(ax)ly — \(count) fix\(count == 1 ? "" : "es") found • Quick-accept: ⌥Tab • Drag to move • Hover badge to peek • Click to view • Right-click for options"
         case .paused:
             return "Synt(ax)ly — Paused • Click to resume • Right-click for options"
         case .error:
@@ -94,69 +90,72 @@ public struct FloatingOverlayView: View {
     }
 
     @ViewBuilder
-    private var statusBadgeOverlay: some View {
+    private func statusBadgeOverlay(for size: PillSize) -> some View {
         switch coordinator.pillState {
         case .allClear:
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
-                .background(Circle().fill(.white).padding(1.5))
-                .font(.system(size: 13, weight: .bold))
-                .offset(x: 4, y: -4)
+                .background(Circle().fill(.white).padding(1.2))
+                .font(.system(size: size == .compact ? 10.5 : (size == .medium ? 11.5 : 13), weight: .bold))
+                .offset(x: size == .compact ? 3 : 4, y: size == .compact ? -3 : -4)
 
         case .checking:
             MangaThinkingDotsBadge()
-                .offset(x: 6, y: -5)
+                .scaleEffect(size == .compact ? 0.8 : (size == .medium ? 0.9 : 1.0))
+                .offset(x: size == .compact ? 3 : 5, y: size == .compact ? -3 : -5)
 
         case .issuesFound(let count, let topCategory):
-            Text("\(count)")
-                .font(.system(size: 10, weight: .heavy, design: .rounded))
-                .foregroundStyle(.white)
-                .frame(minWidth: 16, minHeight: 16)
-                .padding(.horizontal, 3)
-                .background(topCategory.badgeColor, in: Capsule())
-                .overlay(Capsule().strokeBorder(.white, lineWidth: 1.5))
-                .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
-                .offset(x: 5, y: -5)
+            ZStack(alignment: .topTrailing) {
+                Text("\(count)")
+                    .font(.system(size: size == .compact ? 8.5 : (size == .medium ? 9.5 : 10), weight: .heavy, design: .rounded))
+                    .foregroundStyle(.white)
+                    .frame(minWidth: size == .compact ? 13 : (size == .medium ? 15 : 16),
+                           minHeight: size == .compact ? 13 : (size == .medium ? 15 : 16))
+                    .padding(.horizontal, size == .compact ? 2 : 3)
+                    .background(topCategory.badgeColor, in: Capsule())
+                    .overlay(Capsule().strokeBorder(.white, lineWidth: size == .compact ? 1.2 : 1.5))
+                    .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+                    .scaleEffect(coordinator.isBadgeHovered ? 1.15 : 1.0)
+                    .animation(.spring(response: 0.2, dampingFraction: 0.7), value: coordinator.isBadgeHovered)
+                    .offset(x: size == .compact ? 3 : 5, y: size == .compact ? -3 : -5)
+            }
+            .frame(width: size == .compact ? 20 : (size == .medium ? 23 : 26),
+                   height: size == .compact ? 20 : (size == .medium ? 23 : 26),
+                   alignment: .topTrailing)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                coordinator.handleBadgeHover(hovering)
+            }
+            .help("Hover 1s to peek • Click to view")
 
         case .paused:
             Image(systemName: "pause.circle.fill")
                 .foregroundStyle(.secondary)
-                .background(Circle().fill(.white).padding(1.5))
-                .font(.system(size: 13))
-                .offset(x: 4, y: -4)
+                .background(Circle().fill(.white).padding(1.2))
+                .font(.system(size: size == .compact ? 10.5 : (size == .medium ? 11.5 : 13)))
+                .offset(x: size == .compact ? 3 : 4, y: size == .compact ? -3 : -4)
 
         case .error:
             Image(systemName: "exclamationmark.circle.fill")
                 .foregroundStyle(.orange)
-                .background(Circle().fill(.white).padding(1.5))
-                .font(.system(size: 13))
-                .offset(x: 4, y: -4)
+                .background(Circle().fill(.white).padding(1.2))
+                .font(.system(size: size == .compact ? 10.5 : (size == .medium ? 11.5 : 13)))
+                .offset(x: size == .compact ? 3 : 4, y: size == .compact ? -3 : -4)
         }
     }
+}
 
-    private func loadAppIconImage() -> NSImage? {
-        if let img = NSApp.applicationIconImage, img.isValid {
-            return img
-        }
-        if let url = Bundle.main.url(forResource: "app_icon_1024", withExtension: "png"),
-           let img = NSImage(contentsOf: url) {
-            return img
-        }
-        let devPath = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("assets/app_icon_1024.png")
-        if let img = NSImage(contentsOf: devPath) {
-            return img
-        }
-        return nil
+// MARK: - Floating Dialog View (380x348 Expanded Card)
+
+public struct FloatingDialogView: View {
+    @ObservedObject var coordinator: WritingAssistantCoordinator
+    @State private var selectedTab: OverlayTab = .suggestions
+
+    public init(coordinator: WritingAssistantCoordinator) {
+        self.coordinator = coordinator
     }
 
-    // MARK: - Expanded Suggestion & Rewrite Card
-
-    private var expandedCardView: some View {
+    public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             headerBar
 
@@ -168,14 +167,18 @@ public struct FloatingOverlayView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .onChange(of: selectedTab) { _, newTab in
-                coordinator.isRewriteTabActive = (newTab == .rewrite)
-                coordinator.onOverlayStateChanged?()
+                if newTab == .openWritingPad {
+                    coordinator.openWritingPadToRewrite()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        selectedTab = .suggestions
+                    }
+                }
             }
 
             if selectedTab == .suggestions {
                 suggestionsListContent
             } else {
-                rewriteTabContent
+                openWritingPadTabContent
             }
 
             footerBar
@@ -187,16 +190,23 @@ public struct FloatingOverlayView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.14), lineWidth: 1)
         )
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .onHover { hovering in
+            coordinator.handleDialogHover(hovering)
+        }
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                coordinator.openedByHover = false
+            }
+        )
     }
 
     private var headerBar: some View {
         HStack(alignment: .top, spacing: 8) {
-            if let iconImg = loadAppIconImage() {
-                Image(nsImage: iconImg)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 20, height: 20)
-            }
+            Image(nsImage: StatusBarController.renderMangaBubble(size: 20))
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 20, height: 20)
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
@@ -210,14 +220,12 @@ public struct FloatingOverlayView: View {
                     }
                 }
 
-                // Show model name for when you type (or rewrite)
+                // Show model name for when you type
                 HStack(spacing: 4) {
-                    Image(systemName: selectedTab == .suggestions ? "bolt.fill" : "wand.and.stars")
+                    Image(systemName: "bolt.fill")
                         .font(.system(size: 9))
-                        .foregroundStyle(selectedTab == .suggestions ? .blue : .purple)
-                    Text(selectedTab == .suggestions
-                         ? "Type Model: \(coordinator.settings.liveModel)"
-                         : "Rewrite Model: \(coordinator.settings.rewriteModel.isEmpty ? coordinator.settings.liveModel : coordinator.settings.rewriteModel)")
+                        .foregroundStyle(.blue)
+                    Text("Type Model: \(coordinator.settings.liveModel)")
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                 }
                 .foregroundStyle(.secondary)
@@ -242,6 +250,7 @@ public struct FloatingOverlayView: View {
             }
 
             Button {
+                coordinator.cancelHoverTimers()
                 coordinator.isPopoverExpanded = false
                 coordinator.onOverlayStateChanged?()
             } label: {
@@ -287,6 +296,17 @@ public struct FloatingOverlayView: View {
                         .multilineTextAlignment(.center)
                         .padding(.top, 4)
                 }
+
+                Button {
+                    coordinator.openWritingPadToRewrite()
+                } label: {
+                    Label("Open writing pad to rewrite", systemImage: "arrow.up.forward.app")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .padding(.top, 6)
+
                 Spacer()
             }
             .frame(maxWidth: .infinity)
@@ -301,99 +321,78 @@ public struct FloatingOverlayView: View {
                             onAddToDictionary: { coordinator.addIssueWordToDictionary(issue) }
                         )
                     }
+
+                    Button {
+                        coordinator.openWritingPadToRewrite()
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "arrow.up.forward.app")
+                            Text("Open writing pad to rewrite")
+                        }
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.purple)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 4)
                 }
             }
         }
     }
 
-    // MARK: - Rewrite Tab
+    // MARK: - Open Writing Pad to Rewrite Tab
 
-    private var rewriteTabContent: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(RewritePreset.allCases) { preset in
-                        Button {
-                            coordinator.runRewritePreset(preset)
-                        } label: {
-                            Label(preset.title, systemImage: preset.iconName)
-                                .font(.system(size: 11, weight: .medium))
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-                }
+    private var openWritingPadTabContent: some View {
+        VStack(spacing: 14) {
+            Spacer()
+
+            Image(systemName: "wand.and.stars")
+                .font(.system(size: 32))
+                .foregroundStyle(.purple)
+
+            Text("Rewrite in Writing Pad")
+                .font(.system(size: 14, weight: .semibold))
+
+            Text("The check-while-you-type popup is designed for quick spelling & grammar fixes. Use Writing Pad to rewrite paragraphs with custom presets, tones, and formatting.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 20)
+
+            Button {
+                coordinator.openWritingPadToRewrite()
+            } label: {
+                Label("Open writing pad to rewrite", systemImage: "arrow.up.forward.app")
+                    .font(.system(size: 12, weight: .semibold))
+                    .padding(.horizontal, 4)
             }
+            .buttonStyle(.borderedProminent)
+            .tint(.purple)
+            .controlSize(.regular)
 
-            HStack(spacing: 6) {
-                TextField("Custom instruction (e.g. 'make bullet points')", text: $coordinator.customRewritePrompt)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12))
-                Button("Run") {
-                    coordinator.runRewritePreset(.fixGrammar, customPrompt: coordinator.customRewritePrompt)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .disabled(coordinator.customRewritePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-
-            if coordinator.isRewriting {
-                VStack {
-                    Spacer()
-                    ProgressView("Rewriting…")
-                        .font(.caption)
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity)
-            } else if let preview = coordinator.rewrittenPreview {
-                VStack(alignment: .leading, spacing: 6) {
-                    ScrollView {
-                        Text(preview)
-                            .font(.system(size: 12))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(8)
-                            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-                    }
-                    HStack {
-                        Button("Replace in App") {
-                            coordinator.applyRewrittenPreview()
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-
-                        Button("Copy") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(preview, forType: .string)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-
-                        Spacer()
-                    }
-                }
-            } else {
-                Spacer()
-                Text("Select a tone preset above or enter a custom instruction to rewrite the current selection or paragraph.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity)
-                Spacer()
-            }
+            Spacer()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+
+    // MARK: - Footer Bar
 
     private var footerBar: some View {
         HStack {
             Text("Quick accept: ⌥Tab • Toggle: ⌘⇧G")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
+
             Spacer()
-            if let bundleID = coordinator.currentContext?.bundleID,
-               let appName = coordinator.currentContext?.appName {
+
+            if let bundleID = coordinator.currentContext?.bundleID ?? coordinator.currentContext?.appName {
+                let appName = coordinator.currentContext?.appName ?? "Current App"
                 Menu {
-                    Button("Recheck Now") {
+                    Button("Open Writing Pad to Rewrite") {
+                        coordinator.openWritingPadToRewrite()
+                    }
+                    Button("Check Paragraph Now") {
                         if let para = coordinator.currentContext?.activeParagraph {
                             coordinator.triggerImmediateCheck(for: para)
                         }
@@ -417,6 +416,30 @@ public struct FloatingOverlayView: View {
                 .frame(width: 22)
             }
         }
+    }
+}
+
+// MARK: - Unified Wrapper for Previews & Tests
+
+public struct FloatingOverlayView: View {
+    @ObservedObject var coordinator: WritingAssistantCoordinator
+
+    public init(coordinator: WritingAssistantCoordinator) {
+        self.coordinator = coordinator
+    }
+
+    public var body: some View {
+        Group {
+            if coordinator.isPopoverExpanded {
+                FloatingDialogView(coordinator: coordinator)
+            } else {
+                FloatingPillView(coordinator: coordinator)
+            }
+        }
+        .frame(
+            width: coordinator.isPopoverExpanded ? 380 : 48,
+            height: coordinator.isPopoverExpanded ? 348 : 48
+        )
     }
 }
 

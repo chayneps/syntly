@@ -39,6 +39,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self?.openSettingsWindow()
                 }
             )
+            coordinator.onOpenWritingPad = { [weak self] in
+                self?.openWritingPadWindow()
+            }
             coordinator.start()
         } else {
             print("🛡️ Syntly running in SAFE SANDBOX MODE:")

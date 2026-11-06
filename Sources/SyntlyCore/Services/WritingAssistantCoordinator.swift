@@ -13,6 +13,10 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
     @Published public var isPopoverExpanded: Bool = false
     @Published public var isRewriteTabActive: Bool = false
     @Published public var isRewriting: Bool = false
+    @Published public var openedByHover: Bool = false
+    @Published public var isBadgeHovered: Bool = false
+    @Published public var isPillHovered: Bool = false
+    @Published public var isDialogHovered: Bool = false
     @Published public var rewrittenPreview: String?
     @Published public var customRewritePrompt: String = ""
     @Published public private(set) var lastErrorMessage: String?
@@ -22,10 +26,16 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
     public let settings: AppSettings
     private let hotkeyMonitor = GlobalHotkeyMonitor()
     private var debounceTask: Task<Void, Never>?
+    private var hoverOpenTask: Task<Void, Never>?
+    private var hoverCloseTask: Task<Void, Never>?
     private var dismissedOriginals = Set<String>()
     private var lastAnalyzedParagraph: String = ""
+    private var lastReplacementTime: Date?
+    private var lastAcceptedReplacement: String = ""
 
     public var onOverlayStateChanged: (() -> Void)?
+    public var onOpenWritingPad: (() -> Void)?
+    @Published public var incomingWritingPadText: String? = nil
 
     public init(
         axEngine: AXEngine = .shared,
@@ -39,6 +49,10 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         self.axEngine.delegate = self
 
         setupHotkeys()
+
+        self.settings.onPillSizeChanged = { [weak self] in
+            self?.onOverlayStateChanged?()
+        }
     }
 
     public func start() {
@@ -109,14 +123,130 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         }
 
         hotkeyMonitor.onToggleRewritePanelShortcut = { [weak self] in
-            guard let self = self else { return }
-            self.axEngine.pollCurrentFocusedElement()
-            self.isPopoverExpanded.toggle()
-            if self.isPopoverExpanded, let ctx = self.currentContext {
-                self.triggerImmediateCheck(for: ctx.analysisText, baseOffset: ctx.analysisRange.location)
+            self?.togglePopover()
+        }
+    }
+
+    public func togglePopover() {
+        cancelHoverTimers()
+        axEngine.pollCurrentFocusedElement()
+        isPopoverExpanded.toggle()
+        if isPopoverExpanded, let ctx = currentContext {
+            triggerImmediateCheck(for: ctx.analysisText, baseOffset: ctx.analysisRange.location)
+        }
+        onOverlayStateChanged?()
+    }
+
+    public func openWritingPadToRewrite() {
+        let textToBring: String
+        if let current = currentContext {
+            if let sel = current.selectedText, !sel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                textToBring = sel
+            } else if !current.activeParagraph.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                textToBring = current.activeParagraph
+            } else {
+                textToBring = current.fullText
             }
+        } else if !lastAnalyzedParagraph.isEmpty {
+            textToBring = lastAnalyzedParagraph
+        } else {
+            textToBring = ""
+        }
+
+        if !textToBring.isEmpty {
+            self.incomingWritingPadText = textToBring
+        }
+
+        cancelHoverTimers()
+        isPopoverExpanded = false
+        onOverlayStateChanged?()
+
+        onOpenWritingPad?()
+    }
+
+    // MARK: - Hover Peek & Auto-Dismiss Logic
+
+    public func handleBadgeHover(_ hovering: Bool) {
+        isBadgeHovered = hovering
+
+        guard case .issuesFound = pillState else {
+            hoverOpenTask?.cancel()
+            hoverOpenTask = nil
+            return
+        }
+
+        if hovering {
+            hoverCloseTask?.cancel()
+            hoverCloseTask = nil
+
+            if isPopoverExpanded { return }
+
+            hoverOpenTask?.cancel()
+            hoverOpenTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                guard !self.isPopoverExpanded else { return }
+                guard case .issuesFound = self.pillState else { return }
+                self.openedByHover = true
+                self.isPopoverExpanded = true
+                self.onOverlayStateChanged?()
+            }
+        } else {
+            hoverOpenTask?.cancel()
+            hoverOpenTask = nil
+
+            if isPopoverExpanded && openedByHover && !isDialogHovered && !isPillHovered {
+                scheduleHoverClose(delay: 0.5)
+            }
+        }
+    }
+
+    public func handlePillHover(_ hovering: Bool) {
+        isPillHovered = hovering
+        if hovering {
+            hoverCloseTask?.cancel()
+            hoverCloseTask = nil
+        } else {
+            if isPopoverExpanded && openedByHover && !isDialogHovered && !isBadgeHovered {
+                scheduleHoverClose(delay: 0.5)
+            }
+        }
+    }
+
+    public func handleDialogHover(_ hovering: Bool) {
+        isDialogHovered = hovering
+        if hovering {
+            hoverCloseTask?.cancel()
+            hoverCloseTask = nil
+        } else {
+            if isPopoverExpanded && openedByHover && !isPillHovered && !isBadgeHovered {
+                scheduleHoverClose(delay: 0.5)
+            }
+        }
+    }
+
+    public func scheduleHoverClose(delay: Double = 0.5) {
+        hoverCloseTask?.cancel()
+        hoverCloseTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            guard self.isPopoverExpanded && self.openedByHover else { return }
+            guard !self.isDialogHovered && !self.isPillHovered && !self.isBadgeHovered else { return }
+            self.isPopoverExpanded = false
+            self.cancelHoverTimers()
             self.onOverlayStateChanged?()
         }
+    }
+
+    public func cancelHoverTimers() {
+        hoverOpenTask?.cancel()
+        hoverOpenTask = nil
+        hoverCloseTask?.cancel()
+        hoverCloseTask = nil
+        isBadgeHovered = false
+        isPillHovered = false
+        isDialogHovered = false
+        openedByHover = false
     }
 
     private static func offsetIssue(_ issue: WritingIssue, by baseOffset: Int) -> WritingIssue {
@@ -135,8 +265,14 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
     }
 
     nonisolated public func axEngineDidUpdateContext(_ context: FocusedTextContext?) {
-        Task { @MainActor in
-            self.handleUpdatedContext(context)
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                self.handleUpdatedContext(context)
+            }
+        } else {
+            Task { @MainActor in
+                self.handleUpdatedContext(context)
+            }
         }
     }
 
@@ -149,12 +285,24 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             return
         }
 
+        if let lastRep = lastReplacementTime, Date().timeIntervalSince(lastRep) < 0.4 {
+            // Within 400ms of accepting an issue, if the element's reported text does not contain
+            // the replacement text that was just applied, ignore this stale AX notification to prevent reverting memory state.
+            if let current = currentContext, ctx.fullText != current.fullText {
+                if !lastAcceptedReplacement.isEmpty && !ctx.fullText.contains(lastAcceptedReplacement) {
+                    return
+                }
+            }
+        }
+
         let previousApp = currentContext?.bundleID
         currentContext = ctx
 
         if previousApp != ctx.bundleID {
             dismissedOriginals.removeAll()
             rewrittenPreview = nil
+            issues = []
+            lastAnalyzedParagraph = ""
         }
 
         if settings.isCurrentlyPaused() {
@@ -196,23 +344,116 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             return
         }
 
-        // If paragraph hasn't changed and we already have results, keep current state
+        // 1. Instant local macOS NaturalLanguage + NSSpellChecker pass (<3ms) with active-word caret protection
+        let isChromium = AXEngine.isChromiumOrElectronApp(bundleID: ctx.bundleID, appName: ctx.appName)
+        let translatedCaretLocation: Int? = {
+            guard let sel = ctx.selectedRange, sel.length == 0 else { return nil }
+            if isChromium {
+                return AXEngine.convertDOMSelectionToAXValueOffset(domLocation: sel.location, in: ctx.fullText)
+            }
+            return sel.location
+        }()
+
+        let localCaretOffset: Int? = {
+            guard let caret = translatedCaretLocation, caret >= baseOffset else { return nil }
+            return caret - baseOffset
+        }()
+
+        let localIssues = geminiService.runLocalSpellcheck(on: paragraph, caretUTF16Location: localCaretOffset)
+            .filter { !dismissedOriginals.contains($0.original) }
+            .map { Self.offsetIssue($0, by: baseOffset) }
+
+        // Keep still-valid issues from unchanged sentences alive with updated UTF-16 locations while typing or moving cursor
+        let activeWordInFullText = MacOSNLPEngine.activeTypingWordRange(
+            in: ctx.fullText,
+            caretUTF16Location: translatedCaretLocation
+        )
+        var provisionalIssues: [WritingIssue] = []
+
+        for var existing in issues where !dismissedOriginals.contains(existing.original) {
+            let liveRange = AXEngine.findBestOccurrenceRange(
+                of: existing.original,
+                preferredUTF16Location: existing.utf16Location,
+                in: ctx.fullText
+            )
+            if liveRange.location != NSNotFound {
+                existing.utf16Location = liveRange.location
+                existing.utf16Length = liveRange.length
+                provisionalIssues.append(existing)
+            }
+        }
+
+        let sentenceCached = geminiService.cachedIssuesForUnchangedSentences(in: paragraph)
+            .filter { !dismissedOriginals.contains($0.original) }
+            .map { Self.offsetIssue($0, by: baseOffset) }
+
+        for var candidate in (sentenceCached + localIssues) {
+            let liveRange = AXEngine.findBestOccurrenceRange(
+                of: candidate.original,
+                preferredUTF16Location: candidate.utf16Location,
+                in: ctx.fullText
+            )
+            guard liveRange.location != NSNotFound else { continue }
+            if let active = activeWordInFullText, NSIntersectionRange(active, liveRange).length > 0 {
+                let isTerminalPunctuation = candidate.replacement.hasSuffix(".") || candidate.replacement.hasSuffix("?") || candidate.replacement.hasSuffix("!")
+                if !isTerminalPunctuation {
+                    continue
+                }
+            }
+            candidate.utf16Location = liveRange.location
+            candidate.utf16Length = liveRange.length
+
+            let overlappingIndices = provisionalIssues.indices.filter { idx in
+                let existingRange = NSRange(
+                    location: provisionalIssues[idx].utf16Location ?? 0,
+                    length: provisionalIssues[idx].utf16Length ?? (provisionalIssues[idx].original as NSString).length
+                )
+                return NSIntersectionRange(existingRange, liveRange).length > 0
+            }
+            if overlappingIndices.isEmpty {
+                provisionalIssues.append(candidate)
+            } else if overlappingIndices.allSatisfy({ idx in
+                let existingLen = provisionalIssues[idx].utf16Length ?? (provisionalIssues[idx].original as NSString).length
+                return liveRange.length > existingLen || (!candidate.isLocalSpellcheck && provisionalIssues[idx].isLocalSpellcheck)
+            }) {
+                for idx in overlappingIndices.reversed() {
+                    provisionalIssues.remove(at: idx)
+                }
+                provisionalIssues.append(candidate)
+            }
+        }
+
+        provisionalIssues.sort { ($0.utf16Location ?? 0) < ($1.utf16Location ?? 0) }
+
+        // Always update internal issues array so invalidated partial/stale issues are immediately removed
+        self.issues = provisionalIssues
+
+        // Surface instant local NLP & spellcheck issues immediately on the pill
+        let newPillState: PillVisualState
+        if !provisionalIssues.isEmpty {
+            newPillState = .issuesFound(
+                count: provisionalIssues.count,
+                topCategory: provisionalIssues.first?.category ?? .correctness
+            )
+        } else {
+            newPillState = (paragraph == lastAnalyzedParagraph) ? .allClear : .checking
+        }
+
+        if pillState != newPillState {
+            pillState = newPillState
+            onOverlayStateChanged?()
+        }
+
+        // If paragraph text hasn't changed (e.g. only caret moved), do not re-run debounced Gemini API call
         if paragraph == lastAnalyzedParagraph {
+            if provisionalIssues.isEmpty {
+                pillState = .allClear
+            } else {
+                updatePillStateFromIssues()
+            }
             onOverlayStateChanged?()
             return
         }
-
-        // 1. Instant local spellcheck (<5ms)
-        let localIssues = geminiService.runLocalSpellcheck(on: paragraph)
-            .filter { !dismissedOriginals.contains($0.original) }
-            .map { Self.offsetIssue($0, by: baseOffset) }
-        if !localIssues.isEmpty && issues.isEmpty {
-            issues = localIssues
-            pillState = .issuesFound(count: localIssues.count, topCategory: .correctness)
-        } else {
-            pillState = .checking
-        }
-        onOverlayStateChanged?()
 
         // 2. Schedule debounced Gemini contextual check
         // Trigger faster (250ms) when user finishes a sentence with '.', '!', '?', or newline
@@ -239,10 +480,44 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         }
     }
 
+    private func resetPillStateAfterCancellation() {
+        if self.issues.isEmpty {
+            self.pillState = .allClear
+        } else {
+            self.updatePillStateFromIssues()
+        }
+        self.onOverlayStateChanged?()
+    }
+
     private func performProofread(on text: String, localPreIssues: [WritingIssue], baseOffset: Int = 0) async {
+        // Re-run local NLP & spellcheck with `caretUTF16Location: nil` now that the user has paused typing
+        // for the debounce interval, so sentence-final words and missing question marks at the caret are detected.
+        let settledLocalIssues = geminiService.runLocalSpellcheck(on: text, caretUTF16Location: nil)
+            .filter { !dismissedOriginals.contains($0.original) }
+            .map { Self.offsetIssue($0, by: baseOffset) }
+
         do {
-            let aiIssues = try await geminiService.proofread(text: text)
-            guard !Task.isCancelled else { return }
+            let aiIssues = try await withThrowingTaskGroup(of: [WritingIssue].self) { group in
+                group.addTask {
+                    try await self.geminiService.proofread(text: text)
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 5_000_000_000)
+                    throw LLMServiceError.timeout
+                }
+                let first = try await group.next()!
+                group.cancelAll()
+                return first
+            }
+
+            guard !Task.isCancelled else {
+                self.resetPillStateAfterCancellation()
+                return
+            }
+            if let currentAnalysis = currentContext?.analysisText, currentAnalysis != text {
+                self.resetPillStateAfterCancellation()
+                return
+            }
 
             lastAnalyzedParagraph = text
             lastErrorMessage = nil
@@ -250,11 +525,26 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             var combined = aiIssues
                 .filter { !dismissedOriginals.contains($0.original) }
                 .map { Self.offsetIssue($0, by: baseOffset) }
-            for local in localPreIssues where !dismissedOriginals.contains(local.original) {
-                if !combined.contains(where: { $0.original.localizedCaseInsensitiveContains(local.original) }) {
+
+            for local in (settledLocalIssues.isEmpty ? localPreIssues : settledLocalIssues) where !dismissedOriginals.contains(local.original) {
+                let localRange = NSRange(
+                    location: local.utf16Location ?? 0,
+                    length: local.utf16Length ?? (local.original as NSString).length
+                )
+                let overlapsExisting = combined.contains { existing in
+                    let existingRange = NSRange(
+                        location: existing.utf16Location ?? 0,
+                        length: existing.utf16Length ?? (existing.original as NSString).length
+                    )
+                    return NSIntersectionRange(localRange, existingRange).length > 0
+                        || existing.original.localizedCaseInsensitiveContains(local.original)
+                        || local.original.localizedCaseInsensitiveContains(existing.original)
+                }
+                if !overlapsExisting {
                     combined.append(local)
                 }
             }
+            combined.sort { ($0.utf16Location ?? 0) < ($1.utf16Location ?? 0) }
 
             self.issues = combined
             if let first = combined.first {
@@ -264,13 +554,17 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             }
             self.onOverlayStateChanged?()
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else {
+                self.resetPillStateAfterCancellation()
+                return
+            }
             self.lastErrorMessage = error.localizedDescription
-            if !localPreIssues.isEmpty {
-                self.issues = localPreIssues
-                self.pillState = .issuesFound(count: localPreIssues.count, topCategory: .correctness)
+            let fallbackLocal = settledLocalIssues.isEmpty ? localPreIssues : settledLocalIssues
+            if !fallbackLocal.isEmpty {
+                self.issues = fallbackLocal
+                self.pillState = .issuesFound(count: fallbackLocal.count, topCategory: .correctness)
             } else {
-                self.pillState = .error(message: error.localizedDescription)
+                self.pillState = .allClear
             }
             self.onOverlayStateChanged?()
         }
@@ -282,24 +576,44 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
     public var onAllIssuesAccepted: (([WritingIssue], String) -> Void)?
 
     public func acceptIssue(_ issue: WritingIssue) {
+        guard !axEngine.isApplyingReplacement else { return }
+        debounceTask?.cancel()
+
         let currentText = currentContext?.fullText ?? lastAnalyzedParagraph
         let matchedRange = AXEngine.findBestOccurrenceRange(
             of: issue.original,
             preferredUTF16Location: issue.utf16Location,
             in: currentText
         )
-        _ = axEngine.applyIssueReplacement(issue, in: currentText)
+        guard matchedRange.location != NSNotFound else {
+            // Word no longer exists in currentText as a whole word (user edited it or moved on)
+            issues.removeAll { $0.id == issue.id || $0.original == issue.original }
+            updatePillStateFromIssues()
+            if issues.isEmpty && isPopoverExpanded {
+                isPopoverExpanded = false
+                cancelHoverTimers()
+            }
+            onOverlayStateChanged?()
+            return
+        }
+        let applied = axEngine.applyIssueReplacement(issue, in: currentText)
+        guard applied else { return }
+
+        dismissedOriginals.insert(issue.original)
+        geminiService.clearCache()
+        lastReplacementTime = Date()
+        lastAcceptedReplacement = issue.replacement
 
         onIssueAccepted?(issue)
 
         let delta = (issue.replacement as NSString).length - (issue.original as NSString).length
-        let replacedLoc = matchedRange.location != NSNotFound ? matchedRange.location : (issue.utf16Location ?? 0)
+        let replacedLoc = matchedRange.location
 
-        if let current = currentContext, matchedRange.location != NSNotFound {
+        if let current = currentContext {
             let nsCurrent = current.fullText as NSString
             if matchedRange.location + matchedRange.length <= nsCurrent.length {
                 let updated = nsCurrent.replacingCharacters(in: matchedRange, with: issue.replacement)
-                self.currentContext = FocusedTextContext(
+                let updatedContext = FocusedTextContext(
                     appName: current.appName,
                     bundleID: current.bundleID,
                     pid: current.pid,
@@ -308,32 +622,84 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
                     selectedRange: current.selectedRange,
                     anchorAppKitPoint: current.anchorAppKitPoint
                 )
-                self.lastAnalyzedParagraph = updated
+                self.currentContext = updatedContext
+                self.lastAnalyzedParagraph = updatedContext.analysisText
             }
         }
 
-        // Shift UTF-16 offsets of remaining issues located after the accepted issue
+        // Remove the accepted issue AND any overlapping sub-issues covering the same UTF-16 range,
+        // and shift UTF-16 offsets of remaining issues located after the accepted issue.
         var remaining: [WritingIssue] = []
-        for var item in issues where item.id != issue.id {
+        for var item in issues where item.id != issue.id && !(item.original == issue.original && item.replacement == issue.replacement) {
+            let itemRange = NSRange(
+                location: item.utf16Location ?? 0,
+                length: item.utf16Length ?? (item.original as NSString).length
+            )
+            if NSIntersectionRange(itemRange, matchedRange).length > 0 {
+                dismissedOriginals.insert(item.original)
+                continue
+            }
             if let loc = item.utf16Location, loc > replacedLoc {
                 item.utf16Location = max(0, loc + delta)
             }
             remaining.append(item)
         }
-        issues = remaining
-        updatePillStateFromIssues()
 
-        if issues.isEmpty && isPopoverExpanded {
-            isPopoverExpanded = false
-            onOverlayStateChanged?()
+        // Re-evaluate local NLP on updated text so sequential Alt-Tab keypresses can immediately fix
+        // terminal question marks, periods, or newly revealed issues without waiting.
+        if let current = currentContext {
+            let freshLocal = geminiService.runLocalSpellcheck(on: current.analysisText, caretUTF16Location: nil)
+            for fresh in freshLocal where !dismissedOriginals.contains(fresh.original) {
+                let freshRange = NSRange(
+                    location: fresh.utf16Location ?? 0,
+                    length: fresh.utf16Length ?? (fresh.original as NSString).length
+                )
+                let alreadyPresent = remaining.contains { existing in
+                    let existingRange = NSRange(
+                        location: existing.utf16Location ?? 0,
+                        length: existing.utf16Length ?? (existing.original as NSString).length
+                    )
+                    return NSIntersectionRange(freshRange, existingRange).length > 0
+                        || existing.original == fresh.original
+                }
+                if !alreadyPresent {
+                    remaining.append(fresh)
+                }
+            }
+            remaining.sort { ($0.utf16Location ?? 0) < ($1.utf16Location ?? 0) }
         }
+
+        issues = remaining
+
+        if issues.isEmpty {
+            pillState = .allClear
+            if isPopoverExpanded {
+                isPopoverExpanded = false
+                cancelHoverTimers()
+            }
+        } else {
+            updatePillStateFromIssues()
+        }
+        onOverlayStateChanged?()
     }
 
     public func acceptAllIssues() {
+        debounceTask?.cancel()
+        geminiService.clearCache()
+        lastAnalyzedParagraph = ""
+
         guard var workingText = currentContext?.fullText ?? (lastAnalyzedParagraph.isEmpty ? nil : lastAnalyzedParagraph) else {
+            issues = []
+            pillState = .allClear
+            isPopoverExpanded = false
+            cancelHoverTimers()
+            onOverlayStateChanged?()
             return
         }
         let accepted = self.issues
+        for item in accepted {
+            dismissedOriginals.insert(item.original)
+        }
 
         // Resolve ranges in workingText and apply from end to start so earlier replacements never shift later ranges
         let resolvedPairs: [(issue: WritingIssue, range: NSRange)] = issues.compactMap { issue in
@@ -356,6 +722,12 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
 
         _ = axEngine.replaceSelectedOrFullText(with: workingText)
 
+        issues = []
+        pillState = .allClear
+        isPopoverExpanded = false
+        cancelHoverTimers()
+        onOverlayStateChanged?()
+
         onAllIssuesAccepted?(accepted, workingText)
 
         if let current = currentContext {
@@ -368,16 +740,12 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
                 selectedRange: current.selectedRange,
                 anchorAppKitPoint: current.anchorAppKitPoint
             )
-            self.lastAnalyzedParagraph = workingText
         }
-
-        issues.removeAll()
-        updatePillStateFromIssues()
     }
 
     public func dismissIssue(_ issue: WritingIssue) {
         dismissedOriginals.insert(issue.original)
-        issues.removeAll { $0.id == issue.id }
+        issues.removeAll { $0.id == issue.id || ($0.original == issue.original && $0.replacement == issue.replacement) }
         updatePillStateFromIssues()
 
         if issues.isEmpty && isPopoverExpanded {
