@@ -133,6 +133,85 @@ Open **Settings (`⌘,`) → API & Model** from the menu bar icon:
 
 ---
 
+## 🧠 Architecture & Deep Dive: Check-While-You-Type Engine
+
+Synt(ax)ly combines on-device Apple system frameworks with cloud/local LLMs through a multi-tier pipeline engineered for zero latency, rock-solid UI stability, and native accessibility integration.
+
+```
+Focused Text Field (Slack / Chrome / Notes / VS Code)
+         │
+         ▼
+[ AXEngine: Element Resolution & Focus Drill-Down ]
+         │
+         ├───► Non-English Script Gate (<0.05ms) ──► (If Non-English: Hide pill & abort)
+         │
+         ├───► Tier 1: Local On-Device NLP (<3ms)
+         │       • Apple NLTokenizer & NSSpellChecker
+         │       • Contraction & Fused-Word Engine ("lets" → "let's")
+         │       • Phonetic & Food Homophones ("eat stake" → "steak")
+         │       • Active-Word Caret Protection (No mid-word false alerts)
+         │       • Duplicate Word Deduplication ("the the" → "the")
+         │
+         └───► Tier 2: Debounced AI Context Engine (750–1000ms pause)
+                 • SHA-256 Incremental Sentence & Paragraph Cache
+                 • 5-Second Pipeline Watchdog (Prevents stuck checking states)
+                 • Remote / Local LLMs (Gemini, Claude, GPT, Ollama)
+                 • Structured JSON Schema Extraction & Markdown Strip
+```
+
+### 1. Hybrid Language Checking: Local Engine vs. Remote AI Models
+
+Syntly solves the classic latency-vs-intelligence tradeoff by running two complementary engines in parallel:
+
+#### A. Fast Non-English Language Gate (`MacOSNLPEngine.startsWithNonEnglish`)
+- **Instant Script Boundary Detection (<0.05ms)**: Inspects the opening unicode scalars of the active text field. Any non-Latin script character (`scalar.value > 0x024F` — Thai, Chinese, Japanese, Korean, Cyrillic, Arabic, Hebrew, Devanagari, Greek) immediately triggers an early exit.
+- **Accented Latin & Heuristic Scoring**: Checks for leading accented Latin characters or evaluates opening words against Apple's `NLLanguageRecognizer`. If high confidence (≥ 85%) points to a non-English language (Spanish, French, German, etc.) while English confidence is near zero (< 10%), checking is skipped.
+- **Zero Interruption**: When non-English text is detected, the floating pill and dialog are immediately ordered out (`orderOut(nil)`), cancelling pending network calls and eliminating annoying false positives when writing in other languages. Can be toggled in **Settings → Writing Style & Dictionary**.
+
+#### B. Tier 1: Sub-3ms Instant On-Device NLP (`MacOSNLPEngine` + `NSSpellChecker`)
+- **Sentence & Clause Segmentation (`NLTokenizer`)**: Accurately breaks complex paragraphs, lists, and bullet items into discrete sentence units while retaining exact UTF-16 byte offsets.
+- **Grammar & Contraction Rules**: Instantly corrects ubiquitous missing apostrophes and fused words before any network call fires:
+  - `"lets"` $\to$ `"let's"`, `"thats"` $\to$ `"that's"`, `"whats"` $\to$ `"what's"`, `"theres"` $\to$ `"there's"`, `"heres"` $\to$ `"here's"`
+  - `"dont"` $\to$ `"don't"`, `"cant"` $\to$ `"can't"`, `"wont"` $\to$ `"won't"`, `"didnt"` $\to$ `"didn't"`
+- **Phonetic & Food Homophones**: Catches contextual phonetic confusions (e.g. `"eat stake"` $\to$ `"eat steak"`).
+- **Active-Word Caret Protection**: Syntly determines the active word under the blinking text cursor. While a user is mid-keystroke, that word is shielded from spellcheck alerts, preventing distracting red flashes until the word is completed with a space or punctuation.
+- **Entity & Technical Immunity**: Automatically protects camelCase code identifiers (`fetchUserData`), snake_case (`api_endpoint`), file paths, URLs, numbers, and personal dictionary entries.
+
+#### C. Tier 2: Contextual AI Model Proofreading (Cloud & Local Gateways)
+- **Debounced Execution**: Triggers after a configurable typing pause (default: 750–1000ms), avoiding wasteful API calls on every keystroke.
+- **Semantic & Fluency Corrections**: Catches complex structural issues beyond dictionary reach: dangling modifiers, preposition errors (*"discuss about"* $\to$ *"discuss"*), tone consistency, and subtle grammar flaws.
+- **SHA-256 Paragraph Caching**: Computes cryptographic hashes of sentence segments. If previously validated sentences haven't changed, cached suggestions are reused instantly with zero network round-trip.
+- **Watchdog Timeout Protection**: A 5-second asynchronous watchdog timer guarantees that if a network request hangs or the backend proxy drops, the UI automatically resets from `.checking` to `.allClear`, ensuring the pill never gets stuck spinning.
+
+---
+
+### 2. Algorithms & Techniques in "Check While You Type"
+
+#### A. Static Element Frame Anchoring (Decoupled from Caret)
+- **The Problem**: In Chromium (Chrome/Electron), accessibility APIs update the cursor rectangle on every single keystroke. Anchoring a floating pill to the cursor (`rect.maxX`) causes the pill to creep horizontally across the screen as you type, and jump erratically when typing spaces or when autocomplete menus open.
+- **The Solution**: Syntly anchors the pill strictly to the static top-left corner of the focused input element (`kAXPositionAttribute` + `kAXSizeAttribute`). The horizontal X position remains 100% frozen in place while typing.
+- **Tall Document Virtual Anchoring**: For editors taller than 400px (such as Apple Notes or long web documents), the Y coordinate dynamically tracks the active line using `kAXBoundsForRangeParameterizedAttribute`, while the X coordinate remains anchored to the document margin.
+- **Deep Web DOM Focus Drill-Down**: When typing in web browsers, `kAXFocusedUIElementAttribute` from the system level often references the root `AXWebArea` (the whole browser tab). Syntly recursively traverses the accessibility tree down to the leaf `<input>` or `<textarea>`, ensuring accurate boundaries even when browser autocomplete dropdowns (`t - Google Search`) appear.
+
+#### B. Chromium & Electron DOM Selection Drift Calibration (`AXEngine`)
+- **The Problem**: In Electron/Chromium apps (Slack, Notion, VS Code), rich-text lists (`<ul><li>`, `<ol><li>`) serialize with bullet markers (`• `, `1. `) that occupy 2–3 UTF-16 units in accessibility text values, but count as 1 unit in the internal DOM selection coordinate space. This creates an offset drift that corrupts replacements.
+- **The Solution**: Syntly implements a multi-candidate selection calibration algorithm:
+  1. Computes raw UTF-16 offset and list-marker drift adjustments (`±1`, `±2` units per preceding bullet).
+  2. Queries `kAXSelectedTextRangeAttribute` and verifies the text under selection via `kAXSelectedTextAttribute`.
+  3. Uses a 3-tier replacement fallback cascade:
+     - *Tier 1*: Direct accessibility range attribute replacement (`kAXSelectedTextRangeAttribute` + `kAXSelectedTextAttribute`).
+     - *Tier 2*: Calibrated range search with boundary-word confirmation.
+     - *Tier 3*: Synchronized clipboard swap with simulated `⌘V` key events and clipboard restore.
+- **Terminal Punctuation & Composite Word Protection**: Automatically preserves terminal periods (`.`) during sequential `Option + Tab` (`⌥Tab`) acceptances to prevent fusing adjacent punctuation into replacement words.
+
+#### C. Hover Peek & Auto-Dismiss HUD Engine
+- **Hover Peek**: Hovering over the pill's counter badge for 1.0 second automatically opens the expanded suggestion HUD without requiring a mouse click.
+- **Graceful Dismiss**: Moving the mouse out initiates a 0.5-second auto-dismiss countdown.
+- **Mouse-In & Click Pinning**: Moving the cursor into the dialog or clicking anywhere pins the card open permanently until manually dismissed.
+- **Direct Rewrite Transfer**: The *"Open writing pad to rewrite"* action extracts the active context and launches the full Writing Pad canvas for deep rewrites.
+
+---
+
 ## 🔑 AI Providers & Supported Gateways
 
 Synt(ax)ly connects to any standard OpenAI-compatible completions endpoint. Configure your preferred backend in **Settings (`⌘,`) → API & Model**:
@@ -179,7 +258,7 @@ Synt(ax)ly connects to any standard OpenAI-compatible completions endpoint. Conf
 git clone https://github.com/chayneps/syntly.git
 cd syntly
 
-# Run test suite (19 unit and integration tests)
+# Run test suite (47 unit and integration tests)
 swift test
 
 # Build and package native Syntly.app bundle
