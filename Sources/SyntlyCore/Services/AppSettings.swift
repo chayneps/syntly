@@ -279,14 +279,26 @@ public final class AppSettings: ObservableObject {
 
         if let data = defaults.data(forKey: Keys.appPillOffsets),
            let decoded = try? JSONDecoder().decode([String: AppPillOffset].self, from: data) {
-            self.appPillOffsets = decoded
+            var sanitized = decoded
+            for (key, offset) in decoded {
+                if abs(offset.dx) > 150 {
+                    sanitized.removeValue(forKey: key)
+                }
+            }
+            self.appPillOffsets = sanitized
         } else {
             self.appPillOffsets = [:]
         }
 
         if let data = defaults.data(forKey: Keys.appDialogOffsets),
            let decoded = try? JSONDecoder().decode([String: AppPillOffset].self, from: data) {
-            self.appDialogOffsets = decoded
+            var sanitized = decoded
+            for (key, offset) in decoded {
+                if abs(offset.dx) > 300 || abs(offset.dy) > 500 {
+                    sanitized.removeValue(forKey: key)
+                }
+            }
+            self.appDialogOffsets = sanitized
         } else {
             self.appDialogOffsets = [:]
         }

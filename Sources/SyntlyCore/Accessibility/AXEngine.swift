@@ -293,7 +293,22 @@ public final class AXEngine {
             return
         }
 
-        let element = elementRef as! AXUIElement
+        var element = elementRef as! AXUIElement
+
+        // In web areas, split groups, and composite controls, drill down to find the innermost focused text input
+        var drillDepth = 0
+        while drillDepth < 5 {
+            var innerFocusedRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXFocusedUIElementAttribute as CFString, &innerFocusedRef) == .success,
+               let innerRef = innerFocusedRef {
+                let inner = innerRef as! AXUIElement
+                if CFEqual(inner, element) { break }
+                element = inner
+                drillDepth += 1
+            } else {
+                break
+            }
+        }
 
         // Security guardrail: Never inspect password / secure text fields
         if isSecureTextField(element) {
@@ -1313,11 +1328,48 @@ public final class AXEngine {
         return AXUIElementSetAttributeValue(element, attribute as CFString, value as CFTypeRef)
     }
 
-    /// Resolves the caret bounds or top-left corner of the focused text field in AppKit screen coordinates.
-    private func resolveAnchorAppKitPoint(for element: AXUIElement, selectedRange: NSRange?) -> CGPoint {
+    /// Resolves the top-left anchor of the focused text field in AppKit screen coordinates.
+    /// Prioritizes static element frame bounds so the pill remains rock-solid while typing
+    /// and never tracks horizontal caret movement.
+    public func resolveAnchorAppKitPoint(for element: AXUIElement, selectedRange: NSRange?) -> CGPoint {
         let primaryScreenHeight = NSScreen.screens.first?.frame.height ?? NSScreen.main?.frame.height ?? 1080
 
-        // 1. Try caret / selection parameterized bounds first (`kAXBoundsForRangeParameterizedAttribute`)
+        // 1. Query element frame (position & size)
+        var posRef: CFTypeRef?
+        var sizeRef: CFTypeRef?
+        let posSuccess = AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posRef) == .success
+        let sizeSuccess = AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success
+
+        var elementPoint: CGPoint?
+        var elementSize: CGSize?
+
+        if posSuccess, let pVal = posRef {
+            var pt = CGPoint.zero
+            if AXValueGetValue(pVal as! AXValue, .cgPoint, &pt) {
+                elementPoint = pt
+            }
+        }
+        if sizeSuccess, let sVal = sizeRef {
+            var sz = CGSize.zero
+            if AXValueGetValue(sVal as! AXValue, .cgSize, &sz) {
+                elementSize = sz
+            }
+        }
+
+        // Standard input fields, search bars, chat prompt boxes, comment fields (height <= 400 and width > 20):
+        // Anchor strictly to the top-left of the input field. In AppKit coordinates:
+        // x = point.x
+        // y = primaryScreenHeight - point.y
+        if let point = elementPoint, let size = elementSize, size.width > 20, size.height > 10 {
+            if size.height <= 400 {
+                let appKitTopY = primaryScreenHeight - point.y
+                return CGPoint(x: max(20, point.x), y: max(40, appKitTopY))
+            }
+        }
+
+        // 2. Tall documents / editors (e.g. Apple Notes, large webviews, height > 400):
+        // Vertically follow the active line/paragraph so the pill stays near where the user is writing,
+        // but horizontally STAY ANCHORED to the left margin/edge (never following the moving cursor X)!
         if let sel = selectedRange {
             var cfRange = CFRange(location: sel.location, length: max(0, sel.length))
             if let rangeVal = AXValueCreate(.cfRange, &cfRange) {
@@ -1334,32 +1386,25 @@ public final class AXEngine {
                        rect.origin.x > 0 || rect.origin.y > 0,
                        rect.size.height > 2 {
                         let appKitTopY = primaryScreenHeight - rect.minY
-                        // Dock right beside the caret
-                        let appKitLeftX = rect.maxX + 12
-                        return CGPoint(x: max(20, appKitLeftX), y: max(40, appKitTopY))
+                        let anchorX: CGFloat
+                        if let pt = elementPoint, pt.x > 0, pt.x <= rect.minX {
+                            anchorX = pt.x
+                        } else {
+                            anchorX = max(20, rect.minX)
+                        }
+                        return CGPoint(x: max(20, anchorX), y: max(40, appKitTopY))
                     }
                 }
             }
         }
 
-        // 2. Fallback to Element Frame (positioned cleanly inside the editor, not spilling into adjacent sidebars)
-        var posRef: CFTypeRef?
-        var sizeRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posRef) == .success,
-           AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeRef) == .success,
-           let pVal = posRef, let sVal = sizeRef {
-            var point = CGPoint.zero
-            var size = CGSize.zero
-            if AXValueGetValue(pVal as! AXValue, .cgPoint, &point),
-               AXValueGetValue(sVal as! AXValue, .cgSize, &size),
-               size.width > 20, size.height > 12 {
-                let appKitTopY = primaryScreenHeight - point.y
-                let appKitLeftX = point.x + 20
-                return CGPoint(x: max(20, appKitLeftX), y: max(40, appKitTopY - 12))
-            }
+        // 3. Fallback to element frame if available
+        if let point = elementPoint {
+            let appKitTopY = primaryScreenHeight - point.y
+            return CGPoint(x: max(20, point.x), y: max(40, appKitTopY))
         }
 
-        // 3. Fallback near mouse cursor or top-left of main screen
+        // 4. Fallback near mouse cursor or top-left of main screen
         let mouse = NSEvent.mouseLocation
         return CGPoint(x: max(40, mouse.x - 24), y: max(40, mouse.y + 24))
     }

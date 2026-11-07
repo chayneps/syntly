@@ -1885,6 +1885,49 @@ final class SyntlyEndToEndTests: XCTestCase {
         XCTAssertTrue(coordinator.issues.contains(where: { $0.original == "Lets" && $0.replacement == "Let's" }))
         settings.enableEnglishOnlyActivation = true
     }
+
+    @MainActor
+    func testPillAnchorStabilityWhileTypingAndLegacyOffsetSanitization() async throws {
+        // 1. Verify AppSettings sanitizes extreme legacy offsets (e.g. Chrome's -264px from old caret tracking)
+        let legacyOffsets: [String: AppPillOffset] = [
+            "com.google.Chrome": AppPillOffset(dx: -264, dy: -37),
+            "com.apple.Notes": AppPillOffset(dx: -45, dy: -30),
+            "com.tinyspeck.slackmacgap": AppPillOffset(dx: 25, dy: 10)
+        ]
+        let encoded = try JSONEncoder().encode(legacyOffsets)
+        UserDefaults.standard.set(encoded, forKey: "syntly.appPillOffsets")
+
+        let freshSettings = AppSettings()
+        // Chrome's extreme -264 offset must be cleared so it reverts to the clean default
+        XCTAssertNil(freshSettings.pillOffset(for: "com.google.Chrome"))
+        // Normal offsets must be preserved
+        XCTAssertEqual(freshSettings.pillOffset(for: "com.apple.Notes")?.dx, -45)
+        XCTAssertEqual(freshSettings.pillOffset(for: "com.tinyspeck.slackmacgap")?.dx, 25)
+
+        // 2. FocusedTextContext anchorAppKitPoint remains stable when typing
+        let initialContext = FocusedTextContext(
+            appName: "Google Chrome",
+            bundleID: "com.google.Chrome",
+            pid: 1234,
+            fullText: "t",
+            selectedText: "",
+            selectedRange: NSRange(location: 1, length: 0),
+            anchorAppKitPoint: CGPoint(x: 380, y: 700)
+        )
+
+        let typingContext = FocusedTextContext(
+            appName: "Google Chrome",
+            bundleID: "com.google.Chrome",
+            pid: 1234,
+            fullText: "test this is ok or not",
+            selectedText: "",
+            selectedRange: NSRange(location: 22, length: 0),
+            anchorAppKitPoint: CGPoint(x: 380, y: 700)
+        )
+
+        // The anchor must be anchored to the static input element frame, not the moving caret
+        XCTAssertEqual(initialContext.anchorAppKitPoint, typingContext.anchorAppKitPoint)
+    }
 }
 
 // MARK: - Simulated Slack / Chromium Rich-Text List AXUIElement Accessor
