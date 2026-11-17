@@ -11,6 +11,10 @@ public struct WritingPadView: View {
     @State private var isCheckingPad: Bool = false
     @State private var padError: String?
     @State private var padDebounceTask: Task<Void, Never>?
+    @State private var padLocalCheckTask: Task<Void, Never>?
+    @State private var cachedWordCount: Int = 0
+    @State private var cachedCharCount: Int = 0
+    @State private var statsUpdateTask: Task<Void, Never>?
 
     @State private var selectedCategory: IssueCategory? = nil
     @State private var showSavePresetSheet: Bool = false
@@ -31,11 +35,62 @@ public struct WritingPadView: View {
     }
 
     private var wordCount: Int {
-        padText.split(whereSeparator: \.isWhitespace).count
+        cachedWordCount
     }
 
     private var charCount: Int {
-        padText.count
+        cachedCharCount
+    }
+
+    private static func computeWordCountZeroAlloc(in text: String) -> Int {
+        var count = 0
+        var inWord = false
+        for byte in text.utf8 {
+            // Fast ASCII whitespace check (space, tab, LF, VT, FF, CR)
+            if byte == 0x20 || (byte >= 0x09 && byte <= 0x0D) {
+                inWord = false
+            } else if byte < 0x80 {
+                if !inWord {
+                    count += 1
+                    inWord = true
+                }
+            } else {
+                // Multi-byte UTF-8 present: fall back to scalar whitespace check without allocating [Substring]
+                return text.unicodeScalars.reduce(into: (count: 0, inWord: false)) { acc, scalar in
+                    if CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                        acc.inWord = false
+                    } else if !acc.inWord {
+                        acc.count += 1
+                        acc.inWord = true
+                    }
+                }.count
+            }
+        }
+        return count
+    }
+
+    private func updateDocumentStats(for text: String, immediate: Bool = false) {
+        statsUpdateTask?.cancel()
+        if text.isEmpty {
+            cachedWordCount = 0
+            cachedCharCount = 0
+            return
+        }
+        if immediate || text.utf8.count <= 2000 {
+            cachedWordCount = Self.computeWordCountZeroAlloc(in: text)
+            cachedCharCount = text.count
+        } else {
+            statsUpdateTask = Task {
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                guard !Task.isCancelled else { return }
+                let words = Self.computeWordCountZeroAlloc(in: text)
+                let chars = text.count
+                await MainActor.run {
+                    self.cachedWordCount = words
+                    self.cachedCharCount = chars
+                }
+            }
+        }
     }
 
     private var readingTimeMin: Int {
@@ -119,6 +174,7 @@ public struct WritingPadView: View {
         .frame(minWidth: 800, idealWidth: 1080, maxWidth: .infinity, minHeight: 680, idealHeight: 960, maxHeight: .infinity)
         .background(Color(NSColor.windowBackgroundColor))
         .onAppear {
+            updateDocumentStats(for: padText, immediate: true)
             settings.refreshAuthStatus()
             coordinator.onIssueAccepted = { issue in
                 if let range = padText.range(of: issue.original) {
@@ -1078,9 +1134,25 @@ public struct WritingPadView: View {
     // MARK: - AI Checking & Rewriting Logic
 
     private func schedulePadCheck(for text: String) {
-        let local = LLMService.shared.runLocalSpellcheck(on: text)
-        if !local.isEmpty && padIssues.isEmpty {
-            padIssues = local
+        updateDocumentStats(for: text)
+
+        padLocalCheckTask?.cancel()
+        if text.utf8.count <= 300 {
+            let local = LLMService.shared.runLocalSpellcheck(on: text)
+            if !local.isEmpty && padIssues.isEmpty {
+                padIssues = local
+            }
+        } else {
+            padLocalCheckTask = Task {
+                try? await Task.sleep(nanoseconds: 90_000_000)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    let local = LLMService.shared.runLocalSpellcheck(on: text)
+                    if !local.isEmpty && self.padIssues.isEmpty {
+                        self.padIssues = local
+                    }
+                }
+            }
         }
 
         padDebounceTask?.cancel()

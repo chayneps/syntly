@@ -50,14 +50,69 @@ public struct FocusedTextContext: Equatable {
     /// Returns the UTF-16 range to analyze for live proofreading.
     /// For typical messages and multi-line bulleted/numbered lists (<= 1500 UTF-16 code units),
     /// analyzes the full text so all bullet items and surrounding lines are checked together
-    /// with accurate full-text UTF-16 offsets. For longer documents, analyzes the active paragraph.
+    /// with accurate full-text UTF-16 offsets. For longer documents, analyzes the active paragraph,
+    /// capped at a clean word-aligned window around the caret for arbitrarily long single paragraphs.
     public var analysisRange: NSRange {
         let nsText = fullText as NSString
         guard nsText.length > 0 else { return NSRange(location: 0, length: 0) }
         if nsText.length <= 1500 {
             return NSRange(location: 0, length: nsText.length)
         }
-        return activeParagraphRange
+        let paraRange = activeParagraphRange
+        let maxWindow = 1500
+        guard paraRange.length > maxWindow else {
+            return paraRange
+        }
+
+        // Single huge paragraph (> 1500 UTF-16 units): take a caret-centered window
+        // (~1150 units before caret, ~350 units after) aligned cleanly at word/composed boundaries.
+        let paraEnd = paraRange.location + paraRange.length
+        let caret = min(max(paraRange.location, selectedRange?.location ?? paraEnd), paraEnd)
+
+        var start = max(paraRange.location, caret - 1150)
+        var end = min(paraEnd, start + maxWindow)
+        if end == paraEnd {
+            start = max(paraRange.location, end - maxWindow)
+        }
+
+        // Advance `start` past any partial leading word unless anchored at paragraph start
+        if start > paraRange.location {
+            let seq = nsText.rangeOfComposedCharacterSequence(at: start)
+            start = seq.location
+            while start < caret {
+                let ch = nsText.character(at: start)
+                if ch == 0x20 || ch == 0x09 || ch == 0x0A || ch == 0x0D || ch == 0x00A0 {
+                    start += 1
+                    break
+                }
+                start += 1
+            }
+            // Skip consecutive whitespace after break
+            while start < caret {
+                let ch = nsText.character(at: start)
+                if ch == 0x20 || ch == 0x09 || ch == 0x00A0 {
+                    start += 1
+                } else {
+                    break
+                }
+            }
+        }
+
+        // Advance `end` to finish any trailing partial word within a small margin
+        if end < paraEnd {
+            let seq = nsText.rangeOfComposedCharacterSequence(at: end)
+            end = min(paraEnd, seq.location + seq.length)
+            let limit = min(paraEnd, end + 64)
+            while end < limit {
+                let ch = nsText.character(at: end)
+                if ch == 0x20 || ch == 0x09 || ch == 0x0A || ch == 0x0D || ch == 0x00A0 {
+                    break
+                }
+                end += 1
+            }
+        }
+
+        return NSRange(location: start, length: max(0, end - start))
     }
 
     public var analysisText: String {
@@ -99,6 +154,8 @@ public final class AXEngine {
     private var workspaceTokens: [NSObjectProtocol] = []
     private var trustPollTimer: Timer?
     private var enabledElectronPIDs = Set<pid_t>()
+    private var pendingPollWorkItem: DispatchWorkItem?
+    private var lastEmittedContext: FocusedTextContext?
     public private(set) var isApplyingReplacement: Bool = false
 
     public init() {}
@@ -238,6 +295,9 @@ public final class AXEngine {
     }
 
     private func detachObserver() {
+        pendingPollWorkItem?.cancel()
+        pendingPollWorkItem = nil
+        lastEmittedContext = nil
         if let observer = currentObserver {
             CFRunLoopRemoveSource(
                 CFRunLoopGetMain(),
@@ -259,22 +319,37 @@ public final class AXEngine {
     }
 
     private func handleAXNotification(_ notification: String) {
-        pollCurrentFocusedElement()
+        pendingPollWorkItem?.cancel()
+        // Focus changes resolve near-instantly (15ms to fold duplicate Chromium focus bursts).
+        // Value / selection / window notifications coalesce at 60ms so ValueChanged + SelectedTextChanged
+        // for a single keystroke merge into one IPC read and rapid typing never stalls the target app.
+        let delay: TimeInterval = (notification == kAXFocusedUIElementChangedNotification) ? 0.015 : 0.06
+        let item = DispatchWorkItem { [weak self] in
+            self?.pendingPollWorkItem = nil
+            self?.pollCurrentFocusedElement()
+        }
+        pendingPollWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
     }
 
     // MARK: - Inspect Focused Text Element
 
     public func pollCurrentFocusedElement() {
+        pendingPollWorkItem?.cancel()
+        pendingPollWorkItem = nil
+
         if isApplyingReplacement && elementAccessor == nil {
             return
         }
 
         guard checkTrust(prompt: false) else {
+            lastEmittedContext = nil
             delegate?.axEngineDidUpdateContext(nil)
             return
         }
 
         guard let frontApp = NSWorkspace.shared.frontmostApplication else {
+            lastEmittedContext = nil
             delegate?.axEngineDidUpdateContext(nil)
             return
         }
@@ -289,6 +364,7 @@ public final class AXEngine {
         let err = AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedRef)
 
         guard err == .success, let elementRef = focusedRef else {
+            lastEmittedContext = nil
             delegate?.axEngineDidUpdateContext(nil)
             return
         }
@@ -312,20 +388,26 @@ public final class AXEngine {
 
         // Security guardrail: Never inspect password / secure text fields
         if isSecureTextField(element) {
+            lastEmittedContext = nil
             delegate?.axEngineDidUpdateContext(nil)
             return
         }
 
-        guard isEditableTextElement(element) else {
+        var prefetchedValue: String?
+        guard isEditableTextElement(element, prefetchedValue: &prefetchedValue) else {
+            lastEmittedContext = nil
             delegate?.axEngineDidUpdateContext(nil)
             return
         }
 
         lastFocusedElement = element
 
-        let fullText = copyStringAttribute(element, attribute: kAXValueAttribute) ?? ""
-        let selectedText = copyStringAttribute(element, attribute: kAXSelectedTextAttribute)
+        let fullText = prefetchedValue ?? copyStringAttribute(element, attribute: kAXValueAttribute) ?? ""
         let selectedRange = copyRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute)
+        // Skip kAXSelectedTextAttribute IPC completely during normal typing when selection length == 0
+        let selectedText: String? = (selectedRange == nil || selectedRange!.length > 0)
+            ? copyStringAttribute(element, attribute: kAXSelectedTextAttribute)
+            : nil
         let anchorPoint = resolveAnchorAppKitPoint(for: element, selectedRange: selectedRange)
 
         let context = FocusedTextContext(
@@ -338,6 +420,11 @@ public final class AXEngine {
             anchorAppKitPoint: anchorPoint
         )
 
+        if context == lastEmittedContext {
+            return
+        }
+        lastEmittedContext = context
+
         delegate?.axEngineDidUpdateContext(context)
     }
 
@@ -346,6 +433,10 @@ public final class AXEngine {
     /// Normalizes 1-to-1 BMP typographic variants (`\u{00A0}` non-breaking space -> `' '`,
     /// curly apostrophes `’`/`‘` -> `'`, curly quotes `“`/`”` -> `"`) while strictly preserving UTF-16 length.
     public static func normalizeTypographicCharacters(_ text: String) -> String {
+        // Ultra-fast ASCII path: zero allocations when no non-ASCII typographic characters can be present
+        if text.utf8.allSatisfy({ $0 < 0x80 }) {
+            return text
+        }
         var scalars = String.UnicodeScalarView()
         scalars.reserveCapacity(text.unicodeScalars.count)
         for scalar in text.unicodeScalars {
@@ -407,7 +498,8 @@ public final class AXEngine {
     public static func findBestOccurrenceRange(
         of substring: String,
         preferredUTF16Location: Int?,
-        in text: String
+        in text: String,
+        preNormalizedNSString: NSString? = nil
     ) -> NSRange {
         guard !substring.isEmpty else { return NSRange(location: NSNotFound, length: 0) }
         let nsText = text as NSString
@@ -424,7 +516,7 @@ public final class AXEngine {
             }
         }
 
-        let normText = normalizeTypographicCharacters(text) as NSString
+        let normText = preNormalizedNSString ?? (normalizeTypographicCharacters(text) as NSString)
         let normSub = normalizeTypographicCharacters(substring)
 
         var searchRange = NSRange(location: 0, length: normText.length)
@@ -601,61 +693,69 @@ public final class AXEngine {
         let nsText = fullText as NSString
         guard domLocation > 0, nsText.length > 0 else { return 0 }
 
-        let bulletChars = CharacterSet(charactersIn: "•◦▪▫▸‣⁃-*+☐☑✓✔")
         var currentDOM = 0
         var lineStartAX = 0
 
+        @inline(__always)
+        func isBulletUnit(_ ch: unichar) -> Bool {
+            switch ch {
+            case 0x2022, 0x25E6, 0x25AA, 0x25AB, 0x25B8, 0x2023, 0x2043,
+                 0x002D, 0x002A, 0x002B, 0x2610, 0x2611, 0x2713, 0x2714:
+                return true
+            default:
+                return false
+            }
+        }
+
         while lineStartAX < nsText.length {
             let lineRange = nsText.lineRange(for: NSRange(location: lineStartAX, length: 0))
-            let line = nsText.substring(with: lineRange)
-            let nsLine = line as NSString
+            let lineEnd = lineRange.location + lineRange.length
 
             var markerLenAX = 0
             var markerLenDOM = 0
 
-            var idx = 0
-            while idx < nsLine.length {
-                let ch = nsLine.character(at: idx)
+            var idx = lineRange.location
+            while idx < lineEnd {
+                let ch = nsText.character(at: idx)
                 if ch == 0x20 || ch == 0x09 || ch == 0x00A0 { idx += 1 } else { break }
             }
 
-            if idx < nsLine.length, let scalar = UnicodeScalar(nsLine.character(at: idx)), bulletChars.contains(scalar) {
+            if idx < lineEnd, isBulletUnit(nsText.character(at: idx)) {
                 var after = idx + 1
-                while after < nsLine.length {
-                    let ch = nsLine.character(at: after)
+                while after < lineEnd {
+                    let ch = nsText.character(at: after)
                     if ch == 0x20 || ch == 0x09 || ch == 0x00A0 { after += 1 } else { break }
                 }
-                markerLenAX = after
+                markerLenAX = after - lineRange.location
                 markerLenDOM = 1 // In Slack/Chromium DOM selection space, bullet markers occupy 1 unit
-            } else if idx < nsLine.length {
+            } else if idx < lineEnd {
                 var numEnd = idx
-                while numEnd < nsLine.length {
-                    let ch = nsLine.character(at: numEnd)
+                while numEnd < lineEnd {
+                    let ch = nsText.character(at: numEnd)
                     if ch >= 0x30 && ch <= 0x39 { numEnd += 1 } else { break }
                 }
-                if numEnd > idx && numEnd + 1 < nsLine.length {
-                    let punct = nsLine.character(at: numEnd)
-                    let sp = nsLine.character(at: numEnd + 1)
+                if numEnd > idx && numEnd + 1 < lineEnd {
+                    let punct = nsText.character(at: numEnd)
+                    let sp = nsText.character(at: numEnd + 1)
                     if (punct == 0x2E || punct == 0x29) && (sp == 0x20 || sp == 0x09 || sp == 0x00A0) {
-                        markerLenAX = numEnd + 2
+                        markerLenAX = (numEnd + 2) - lineRange.location
                         markerLenDOM = 1
                     }
                 }
             }
 
-            let contentLenAX = nsLine.length - markerLenAX
+            let contentLenAX = lineRange.length - markerLenAX
             let lineLenDOM = markerLenDOM + contentLenAX
 
-            if currentDOM + lineLenDOM > domLocation || lineRange.location + lineRange.length >= nsText.length {
+            if currentDOM + lineLenDOM > domLocation || lineEnd >= nsText.length {
                 let offsetInDOM = max(0, domLocation - currentDOM)
                 let offsetInAX = markerLenAX + max(0, offsetInDOM - markerLenDOM)
                 return min(lineRange.location + offsetInAX, nsText.length)
             }
 
             currentDOM += lineLenDOM
-            let nextStart = lineRange.location + lineRange.length
-            if nextStart <= lineStartAX { break }
-            lineStartAX = nextStart
+            if lineEnd <= lineStartAX { break }
+            lineStartAX = lineEnd
         }
         return min(domLocation, nsText.length)
     }
@@ -1251,7 +1351,19 @@ public final class AXEngine {
         return false
     }
 
-    private func isEditableTextElement(_ element: AXUIElement) -> Bool {
+    private func isEditableTextElement(_ element: AXUIElement, prefetchedValue: inout String?) -> Bool {
+        var isValueSettable = DarwinBoolean(false)
+        AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &isValueSettable)
+        if isValueSettable.boolValue {
+            return true
+        }
+
+        var isSelectedTextSettable = DarwinBoolean(false)
+        AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &isSelectedTextSettable)
+        if isSelectedTextSettable.boolValue {
+            return true
+        }
+
         let role = copyStringAttribute(element, attribute: kAXRoleAttribute) ?? ""
         let editableRoles: Set<String> = [
             kAXTextAreaRole as String,
@@ -1261,17 +1373,8 @@ public final class AXEngine {
             "AXGroup"
         ]
 
-        var isValueSettable = DarwinBoolean(false)
-        AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &isValueSettable)
-
-        var isSelectedTextSettable = DarwinBoolean(false)
-        AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString, &isSelectedTextSettable)
-
-        if isValueSettable.boolValue || isSelectedTextSettable.boolValue {
-            return true
-        }
-
-        if editableRoles.contains(role), copyStringAttribute(element, attribute: kAXValueAttribute) != nil {
+        if editableRoles.contains(role), let val = copyStringAttribute(element, attribute: kAXValueAttribute) {
+            prefetchedValue = val
             return true
         }
 

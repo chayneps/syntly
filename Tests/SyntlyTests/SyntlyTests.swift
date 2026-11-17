@@ -1928,6 +1928,55 @@ final class SyntlyEndToEndTests: XCTestCase {
         // The anchor must be anchored to the static input element frame, not the moving caret
         XCTAssertEqual(initialContext.anchorAppKitPoint, typingContext.anchorAppKitPoint)
     }
+
+    func testLongDocumentWindowedAnalysisAndIncrementalLocalPerformance() throws {
+        // 1. Verify analysisRange caps single giant paragraphs (> 1500 UTF-16 units) to a clean caret window
+        let giantSentence = "John and Mary met at Google Cloud in Seattle to review the clean documentation for SyntlyCore updates. "
+        let giantPara = String(repeating: giantSentence, count: 60) // ~6,300 chars, no newlines
+        let ctx = FocusedTextContext(
+            appName: "Chrome",
+            bundleID: "com.google.Chrome",
+            pid: 555,
+            fullText: giantPara,
+            selectedText: nil,
+            selectedRange: NSRange(location: (giantPara as NSString).length, length: 0)
+        )
+        let winRange = ctx.analysisRange
+        XCTAssertLessThanOrEqual(winRange.length, 1600, "Live analysisRange must stay bounded even for huge single-paragraph docs")
+        XCTAssertGreaterThan(winRange.location, 4000, "Window must anchor near the active caret position")
+        XCTAssertEqual((ctx.activeParagraph as NSString).length, (giantPara as NSString).length, "activeParagraph must remain full paragraph for Writing Pad")
+        XCTAssertTrue(ctx.analysisText.hasSuffix("updates. "))
+
+        // 2. Verify incremental chunk cache + single-pass NER speed & correctness on a 10,000+ char multi-paragraph doc
+        MacOSNLPEngine.clearLocalCache()
+        let baseDoc = String(repeating: giantSentence + "\n", count: 100) // ~10,600 chars with many capitalized words/NER entities
+        let typedV1 = baseDoc + "We have alot of work "
+        let caretV1 = (typedV1 as NSString).length
+
+        // Warm pass populates unchanged chunk cache
+        let issuesV1 = MacOSNLPEngine.analyzeLocally(text: typedV1, caretUTF16Location: caretV1)
+        XCTAssertTrue(issuesV1.contains(where: { $0.original == "alot" && $0.replacement == "a lot" }))
+        // Named entities in repeated paragraphs must stay immune and NOT be flagged
+        XCTAssertFalse(issuesV1.contains(where: { $0.original == "Seattle" || $0.original == "SyntlyCore" }))
+
+        // Simulate next keystrokes at the end of the 10,600+ char document
+        let typedV2 = baseDoc + "We have alot of work and dont "
+        let caretV2 = (typedV2 as NSString).length
+
+        let start = CFAbsoluteTimeGetCurrent()
+        let issuesV2 = MacOSNLPEngine.analyzeLocally(text: typedV2, caretUTF16Location: caretV2)
+        let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000.0
+
+        XCTAssertTrue(issuesV2.contains(where: { $0.original == "alot" && $0.replacement == "a lot" }))
+        XCTAssertTrue(issuesV2.contains(where: { $0.original == "dont" && $0.replacement == "don't" }))
+        XCTAssertLessThan(elapsedMs, 50.0, "Keystroke local analysis on 10k+ chars with incremental chunk cache should take < 50ms (was \(elapsedMs)ms)")
+
+        // 3. activeTypingWordRange near offset 10,600 must correctly resolve mid-word at caret
+        let typingMidWord = baseDoc + "Testing"
+        let activeRange = MacOSNLPEngine.activeTypingWordRange(in: typingMidWord, caretUTF16Location: (typingMidWord as NSString).length)
+        XCTAssertNotNil(activeRange)
+        XCTAssertEqual((typingMidWord as NSString).substring(with: activeRange!), "Testing")
+    }
 }
 
 // MARK: - Simulated Slack / Chromium Rich-Text List AXUIElement Accessor

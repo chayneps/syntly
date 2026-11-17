@@ -157,7 +157,17 @@ public final class StatusBarController: NSObject {
         return Self.renderMangaBubble(size: 18)
     }
 
+    private static let bubbleCacheLock = NSLock()
+    private static var bubbleImageCache: [CGFloat: NSImage] = [:]
+
     public static func renderMangaBubble(size ptSize: CGFloat = 18) -> NSImage {
+        bubbleCacheLock.lock()
+        if let cached = bubbleImageCache[ptSize] {
+            bubbleCacheLock.unlock()
+            return cached
+        }
+        bubbleCacheLock.unlock()
+
         let image = NSImage(size: NSSize(width: ptSize, height: ptSize))
         image.lockFocus()
         guard let cg = NSGraphicsContext.current?.cgContext else {
@@ -211,6 +221,11 @@ public final class StatusBarController: NSObject {
 
         image.unlockFocus()
         image.isTemplate = false
+
+        bubbleCacheLock.lock()
+        bubbleImageCache[ptSize] = image
+        bubbleCacheLock.unlock()
+
         return image
     }
 

@@ -381,15 +381,21 @@ public final class FloatingPanelController: NSObject {
         let pillOrigin = CGPoint(x: clampedPillX, y: clampedPillY)
 
         let pillFrame = NSRect(origin: pillOrigin, size: NSSize(width: bubbleSize, height: bubbleSize))
-        pill.setFrame(pillFrame, display: true, animate: false)
-        pill.orderFrontRegardless()
+        if pill.frame != pillFrame {
+            pill.setFrame(pillFrame, display: true, animate: false)
+        }
+        if !pill.isVisible {
+            pill.orderFrontRegardless()
+        }
 
         // Sync Dialog Panel
         if coordinator.isPopoverExpanded {
             repositionDialogPanel(relativeTo: pillOrigin)
             dialog.allowsKeyWindow = coordinator.isRewriteTabActive
-            dialog.orderFrontRegardless()
-        } else {
+            if !dialog.isVisible {
+                dialog.orderFrontRegardless()
+            }
+        } else if dialog.isVisible {
             dialog.orderOut(nil)
         }
     }
@@ -424,7 +430,10 @@ public final class FloatingPanelController: NSObject {
         originX = max(screenFrame.minX + 8, min(originX, screenFrame.maxX - dialogSize.width - 8))
         originY = max(screenFrame.minY + 8, min(originY, screenFrame.maxY - dialogSize.height - 8))
 
-        dialog.setFrame(NSRect(origin: CGPoint(x: originX, y: originY), size: dialogSize), display: true, animate: false)
+        let newFrame = NSRect(origin: CGPoint(x: originX, y: originY), size: dialogSize)
+        if dialog.frame != newFrame {
+            dialog.setFrame(newFrame, display: true, animate: false)
+        }
     }
 
     // MARK: - Pill Context Menu (Right Click)

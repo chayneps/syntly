@@ -38,6 +38,8 @@ public final class LLMService {
     private var cache: [String: [WritingIssue]] = [:]
     private let cacheLock = NSLock()
     private let maxCacheEntries = 200
+    private var cachedPrefixConfig: (dialect: EnglishDialect, dict: [String], custom: String)?
+    private var cachedPrefixString: String = ""
 
     public init(settings: AppSettings = .shared, urlSession: URLSession = .shared) {
         self.settings = settings
@@ -58,33 +60,41 @@ public final class LLMService {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
+    private func fastCacheKeyLocked(for text: String) -> String {
+        let dialect = settings.dialect
+        let dict = settings.personalDictionary
+        let custom = settings.customStyleInstruction
+        if cachedPrefixConfig == nil ||
+            cachedPrefixConfig!.dialect != dialect ||
+            cachedPrefixConfig!.dict != dict ||
+            cachedPrefixConfig!.custom != custom {
+            let dictJoined = dict.sorted().joined(separator: ",")
+            cachedPrefixConfig = (dialect, dict, custom)
+            cachedPrefixString = "\(dialect.rawValue)|\(dictJoined)|\(custom)|"
+        }
+        let payload = cachedPrefixString + text
+        let digest = SHA256.hash(data: Data(payload.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
     public func cachedIssues(for text: String) -> [WritingIssue]? {
-        let key = Self.cacheKey(
-            for: text,
-            dialect: settings.dialect,
-            dictionary: settings.personalDictionary,
-            customInstruction: settings.customStyleInstruction
-        )
         cacheLock.lock()
         defer { cacheLock.unlock() }
+        guard !cache.isEmpty else { return nil }
+        let key = fastCacheKeyLocked(for: text)
         return cache[key]
     }
 
     public func storeCache(_ issues: [WritingIssue], for text: String) {
-        let key = Self.cacheKey(
-            for: text,
-            dialect: settings.dialect,
-            dictionary: settings.personalDictionary,
-            customInstruction: settings.customStyleInstruction
-        )
+        let segments = MacOSNLPEngine.segmentSentences(in: text)
         cacheLock.lock()
+        let key = fastCacheKeyLocked(for: text)
         if cache.count >= maxCacheEntries, let firstKey = cache.keys.first {
             cache.removeValue(forKey: firstKey)
         }
         cache[key] = issues
 
         // Also index issues by completed sentence (`NLTokenizer`) for incremental Check-While-Typing reuse
-        let segments = MacOSNLPEngine.segmentSentences(in: text)
         if segments.count > 1 {
             for seg in segments {
                 let trimmedSeg = seg.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -102,12 +112,7 @@ public final class LLMService {
                     localCopy.utf16Location = loc - seg.utf16Range.location
                     return localCopy
                 }
-                let segKey = Self.cacheKey(
-                    for: seg.text,
-                    dialect: settings.dialect,
-                    dictionary: settings.personalDictionary,
-                    customInstruction: settings.customStyleInstruction
-                )
+                let segKey = fastCacheKeyLocked(for: seg.text)
                 cache[segKey] = segIssues
             }
         }
@@ -117,12 +122,19 @@ public final class LLMService {
     /// Retrieves cached issues for any sentences in `text` that have already been analyzed,
     /// shifting their `utf16Location` to match their current position in `text`.
     public func cachedIssuesForUnchangedSentences(in text: String) -> [WritingIssue] {
+        cacheLock.lock()
+        let isCacheEmpty = cache.isEmpty
+        cacheLock.unlock()
+        guard !isCacheEmpty else { return [] }
+
         let segments = MacOSNLPEngine.segmentSentences(in: text)
         guard !segments.isEmpty else { return [] }
 
         var collected: [WritingIssue] = []
+        cacheLock.lock()
         for seg in segments {
-            if let segIssues = cachedIssues(for: seg.text) {
+            let key = fastCacheKeyLocked(for: seg.text)
+            if let segIssues = cache[key] {
                 for var issue in segIssues {
                     if let relLoc = issue.utf16Location {
                         issue.utf16Location = seg.utf16Range.location + relLoc
@@ -131,6 +143,7 @@ public final class LLMService {
                 }
             }
         }
+        cacheLock.unlock()
         return collected
     }
 

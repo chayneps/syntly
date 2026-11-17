@@ -8,6 +8,9 @@ public final class GlobalHotkeyMonitor {
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    private var tapRunLoop: CFRunLoop?
+    private var tapThread: Thread?
+    private let stateLock = NSLock()
     private var globalMonitor: Any?
     private var localMonitor: Any?
 
@@ -30,7 +33,7 @@ public final class GlobalHotkeyMonitor {
         let mask = (1 << CGEventType.keyDown.rawValue)
         let observer = Unmanaged.passUnretained(self).toOpaque()
 
-        let tap = CGEvent.tapCreate(
+        guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
             options: .defaultTap,
@@ -42,7 +45,10 @@ public final class GlobalHotkeyMonitor {
                 let monitor = Unmanaged<GlobalHotkeyMonitor>.fromOpaque(refcon).takeUnretainedValue()
 
                 if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-                    if let tap = monitor.eventTap {
+                    monitor.stateLock.lock()
+                    let tap = monitor.eventTap
+                    monitor.stateLock.unlock()
+                    if let tap = tap {
                         CGEvent.tapEnable(tap: tap, enable: true)
                     }
                     return Unmanaged.passRetained(event)
@@ -79,30 +85,65 @@ public final class GlobalHotkeyMonitor {
                 return Unmanaged.passRetained(event)
             },
             userInfo: observer
-        )
-
-        if let tap = tap {
-            self.eventTap = tap
-            let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-            self.runLoopSource = source
-            CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-            CGEvent.tapEnable(tap: tap, enable: true)
-        } else {
+        ) else {
             // Fallback to NSEvent global monitor if CGEventTap cannot be initialized
             globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
                 self?.handleNSEvent(event)
             }
+            return
         }
+
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        stateLock.lock()
+        self.eventTap = tap
+        self.runLoopSource = source
+        stateLock.unlock()
+
+        // Host the CGEventTap on its own dedicated .userInteractive thread RunLoop so
+        // system-wide keystrokes never wait behind Main Thread UI layout or NLP work.
+        let thread = Thread { [weak self] in
+            guard let self = self, let src = source else { return }
+            let rl = CFRunLoopGetCurrent()
+            self.stateLock.lock()
+            self.tapRunLoop = rl
+            self.stateLock.unlock()
+
+            CFRunLoopAddSource(rl, src, .commonModes)
+            CGEvent.tapEnable(tap: tap, enable: true)
+            CFRunLoopRun()
+
+            CFRunLoopRemoveSource(rl, src, .commonModes)
+        }
+        thread.name = "dev.syntly.hotkeyTap"
+        thread.qualityOfService = .userInteractive
+        stateLock.lock()
+        self.tapThread = thread
+        stateLock.unlock()
+        thread.start()
     }
 
     public func stop() {
-        if let tap = eventTap {
+        stateLock.lock()
+        let tap = eventTap
+        let src = runLoopSource
+        let rl = tapRunLoop
+        eventTap = nil
+        runLoopSource = nil
+        tapRunLoop = nil
+        tapThread = nil
+        stateLock.unlock()
+
+        if let tap = tap {
             CGEvent.tapEnable(tap: tap, enable: false)
-            if let src = runLoopSource {
-                CFRunLoopRemoveSource(CFRunLoopGetMain(), src, .commonModes)
-                self.runLoopSource = nil
+        }
+        if let rl = rl {
+            if let src = src {
+                CFRunLoopPerformBlock(rl, CFRunLoopMode.commonModes.rawValue) {
+                    CFRunLoopRemoveSource(rl, src, .commonModes)
+                }
             }
-            self.eventTap = nil
+            CFRunLoopStop(rl)
+            CFRunLoopWakeUp(rl)
         }
         if let global = globalMonitor {
             NSEvent.removeMonitor(global)

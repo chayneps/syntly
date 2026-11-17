@@ -213,7 +213,7 @@ public struct FloatingDialogView: View {
                     Text("Synt(ax)ly Writing Assistant")
                         .font(.system(size: 13, weight: .bold))
 
-                    if let appName = coordinator.currentContext?.appName {
+                    if let appName = coordinator.activeAppDisplayName {
                         Text("• \(appName)")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
@@ -386,8 +386,8 @@ public struct FloatingDialogView: View {
 
             Spacer()
 
-            if let bundleID = coordinator.currentContext?.bundleID ?? coordinator.currentContext?.appName {
-                let appName = coordinator.currentContext?.appName ?? "Current App"
+            if let bundleID = coordinator.activeAppBundleID ?? coordinator.activeAppDisplayName {
+                let appName = coordinator.activeAppDisplayName ?? "Current App"
                 Menu {
                     Button("Open Writing Pad to Rewrite") {
                         coordinator.openWritingPadToRewrite()

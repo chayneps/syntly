@@ -7,7 +7,20 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
     public static let shared = WritingAssistantCoordinator()
 
     @Published public private(set) var isAccessibilityTrusted: Bool = AXIsProcessTrusted()
-    @Published public private(set) var currentContext: FocusedTextContext?
+    public private(set) var currentContext: FocusedTextContext? {
+        didSet {
+            let newName = currentContext?.appName
+            let newBundle = currentContext?.bundleID
+            if activeAppDisplayName != newName {
+                activeAppDisplayName = newName
+            }
+            if activeAppBundleID != newBundle {
+                activeAppBundleID = newBundle
+            }
+        }
+    }
+    @Published public private(set) var activeAppDisplayName: String?
+    @Published public private(set) var activeAppBundleID: String?
     @Published public private(set) var issues: [WritingIssue] = []
     @Published public var pillState: PillVisualState = .allClear
     @Published public var isPopoverExpanded: Bool = false
@@ -296,12 +309,13 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
         }
 
         let previousApp = currentContext?.bundleID
+        let previousAnchor = currentContext?.anchorAppKitPoint
         currentContext = ctx
 
         if previousApp != ctx.bundleID {
             dismissedOriginals.removeAll()
             rewrittenPreview = nil
-            issues = []
+            if !issues.isEmpty { issues = [] }
             lastAnalyzedParagraph = ""
         }
 
@@ -333,7 +347,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
 
         if settings.enableEnglishOnlyActivation && MacOSNLPEngine.startsWithNonEnglish(ctx.fullText) {
             debounceTask?.cancel()
-            issues = []
+            if !issues.isEmpty { issues = [] }
             pillState = .allClear
             if isPopoverExpanded {
                 isPopoverExpanded = false
@@ -343,14 +357,21 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             return
         }
 
+        let nsFullText = ctx.fullText as NSString
         let analysisRange = ctx.analysisRange
-        let paragraph = ctx.analysisText
+        let paragraph = nsFullText.substring(with: analysisRange)
         let baseOffset = analysisRange.location
-        let trimmed = paragraph.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        guard trimmed.count >= 3 else {
+        var nonWSCount = 0
+        for scalar in paragraph.unicodeScalars {
+            if !CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                nonWSCount += 1
+                if nonWSCount >= 3 { break }
+            }
+        }
+        guard nonWSCount >= 3 else {
             debounceTask?.cancel()
-            issues = []
+            if !issues.isEmpty { issues = [] }
             pillState = .allClear
             onOverlayStateChanged?()
             return
@@ -380,14 +401,33 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             in: ctx.fullText,
             caretUTF16Location: translatedCaretLocation
         )
+
+        // Lazily compute normalized full text at most ONCE across all issue range lookups (instead of O(issues * N))
+        var cachedNormFullText: NSString?
+        func resolveRangeInFullText(of original: String, preferredLoc: Int?) -> NSRange {
+            let subLen = (original as NSString).length
+            if let loc = preferredLoc, loc >= 0, loc + subLen <= nsFullText.length {
+                let exactRange = NSRange(location: loc, length: subLen)
+                if AXEngine.typographicallyEqual(nsFullText.substring(with: exactRange), original),
+                   AXEngine.isWholeWordMatch(range: exactRange, of: original, in: nsFullText) {
+                    return exactRange
+                }
+            }
+            if cachedNormFullText == nil {
+                cachedNormFullText = AXEngine.normalizeTypographicCharacters(ctx.fullText) as NSString
+            }
+            return AXEngine.findBestOccurrenceRange(
+                of: original,
+                preferredUTF16Location: preferredLoc,
+                in: ctx.fullText,
+                preNormalizedNSString: cachedNormFullText
+            )
+        }
+
         var provisionalIssues: [WritingIssue] = []
 
         for var existing in issues where !dismissedOriginals.contains(existing.original) {
-            let liveRange = AXEngine.findBestOccurrenceRange(
-                of: existing.original,
-                preferredUTF16Location: existing.utf16Location,
-                in: ctx.fullText
-            )
+            let liveRange = resolveRangeInFullText(of: existing.original, preferredLoc: existing.utf16Location)
             if liveRange.location != NSNotFound {
                 existing.utf16Location = liveRange.location
                 existing.utf16Length = liveRange.length
@@ -400,11 +440,7 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             .map { Self.offsetIssue($0, by: baseOffset) }
 
         for var candidate in (sentenceCached + localIssues) {
-            let liveRange = AXEngine.findBestOccurrenceRange(
-                of: candidate.original,
-                preferredUTF16Location: candidate.utf16Location,
-                in: ctx.fullText
-            )
+            let liveRange = resolveRangeInFullText(of: candidate.original, preferredLoc: candidate.utf16Location)
             guard liveRange.location != NSNotFound else { continue }
             if let active = activeWordInFullText, NSIntersectionRange(active, liveRange).length > 0 {
                 let isTerminalPunctuation = candidate.replacement.hasSuffix(".") || candidate.replacement.hasSuffix("?") || candidate.replacement.hasSuffix("!")
@@ -437,8 +473,10 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
 
         provisionalIssues.sort { ($0.utf16Location ?? 0) < ($1.utf16Location ?? 0) }
 
-        // Always update internal issues array so invalidated partial/stale issues are immediately removed
-        self.issues = provisionalIssues
+        // Only mutate @Published `issues` when contents actually changed to prevent redundant SwiftUI redraws
+        if self.issues != provisionalIssues {
+            self.issues = provisionalIssues
+        }
 
         // Surface instant local NLP & spellcheck issues immediately on the pill
         let newPillState: PillVisualState
@@ -451,8 +489,11 @@ public final class WritingAssistantCoordinator: ObservableObject, AXEngineDelega
             newPillState = (paragraph == lastAnalyzedParagraph) ? .allClear : .checking
         }
 
+        let anchorMoved = previousAnchor != ctx.anchorAppKitPoint
         if pillState != newPillState {
             pillState = newPillState
+            onOverlayStateChanged?()
+        } else if anchorMoved {
             onOverlayStateChanged?()
         }
 

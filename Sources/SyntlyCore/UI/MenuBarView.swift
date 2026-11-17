@@ -72,7 +72,7 @@ public struct MenuBarView: View {
                 }
             }
 
-            if let ctx = coordinator.currentContext {
+            if let _ = coordinator.activeAppDisplayName, let ctx = coordinator.currentContext {
                 let appKey = ctx.bundleID ?? ctx.appName
                 let isPaused = settings.isAppPaused(bundleID: appKey)
                 let isBlocked = settings.isAppBlocked(bundleID: appKey)
