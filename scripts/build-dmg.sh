@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_NAME="Syntly"
 VOLUME_NAME="Synt(ax)ly"
-VERSION="2.0.1"
+VERSION="2.0.2"
 BUILD_UNIVERSAL=true
 SIGNING_IDENTITY="${SIGNING_IDENTITY:--}"
 

@@ -1977,6 +1977,96 @@ final class SyntlyEndToEndTests: XCTestCase {
         XCTAssertNotNil(activeRange)
         XCTAssertEqual((typingMidWord as NSString).substring(with: activeRange!), "Testing")
     }
+
+    func testPlaceholderTextDetectionIgnoresPlaceholderAndPreservesRealText() {
+        // 1. Direct AXPlaceholderValue match (e.g. ChatGPT "Work with Codex", with or without trailing newline)
+        XCTAssertTrue(AXEngine.isPlaceholderValue(
+            "Work with Codex",
+            selectedRange: NSRange(location: 0, length: 0),
+            placeholderValue: "Work with Codex"
+        ))
+        XCTAssertTrue(AXEngine.isPlaceholderValue(
+            "Work with Codex\n",
+            selectedRange: nil,
+            placeholderValue: "Work with Codex"
+        ))
+
+        // 2. Parent or child AXPlaceholderValue match (SwiftUI wrapper / ProseMirror <p>)
+        XCTAssertTrue(AXEngine.isPlaceholderValue(
+            "Work with Codex",
+            selectedRange: NSRange(location: 0, length: 0),
+            parentPlaceholderValue: "Work with Codex"
+        ))
+        XCTAssertTrue(AXEngine.isPlaceholderValue(
+            "Work with Codex",
+            selectedRange: NSRange(location: 0, length: 0),
+            childPlaceholderValue: "Work with Codex"
+        ))
+
+        // 3. AXNumberOfCharacters == 0 while AXValue leaks placeholder
+        XCTAssertTrue(AXEngine.isPlaceholderValue(
+            "Work with Codex",
+            selectedRange: NSRange(location: 0, length: 0),
+            numberOfCharacters: 0
+        ))
+
+        // 4. AXStringForRange({0, 1}) returns empty string ""
+        XCTAssertTrue(AXEngine.isPlaceholderValue(
+            "Work with Codex",
+            selectedRange: NSRange(location: 0, length: 0),
+            firstCharStringForRange: ""
+        ))
+
+        // 5. AXDescription / AXTitle matches when caret is untouched at 0, but NOT when user typed past 0
+        XCTAssertTrue(AXEngine.isPlaceholderValue(
+            "Work with Codex",
+            selectedRange: NSRange(location: 0, length: 0),
+            description: "Work with Codex"
+        ))
+        XCTAssertFalse(AXEngine.isPlaceholderValue(
+            "Work with Codex",
+            selectedRange: NSRange(location: 15, length: 0),
+            description: "Work with Codex"
+        ))
+
+        // 6. Web/Electron ProseMirror/TipTap/Quill empty placeholder CSS classes
+        XCTAssertTrue(AXEngine.isPlaceholderValue(
+            "Work with Codex",
+            selectedRange: NSRange(location: 0, length: 0),
+            childDomClasses: ["placeholder", "is-empty"]
+        ))
+        XCTAssertFalse(AXEngine.isPlaceholderValue(
+            "Work with Codex",
+            selectedRange: NSRange(location: 15, length: 0),
+            childDomClasses: ["placeholder"]
+        ))
+
+        // 7. SwiftUI ZStack sibling AXStaticText overlay when caret is at 0
+        XCTAssertTrue(AXEngine.isPlaceholderValue(
+            "Work with Codex",
+            selectedRange: NSRange(location: 0, length: 0),
+            siblingStaticTexts: ["Work with Codex"]
+        ))
+
+        // 8. Real user-typed text (even when placeholderValue exists on the field) must NEVER be ignored
+        XCTAssertFalse(AXEngine.isPlaceholderValue(
+            "Fix the bug in AXEngine",
+            selectedRange: NSRange(location: 23, length: 0),
+            placeholderValue: "Work with Codex",
+            numberOfCharacters: 23,
+            firstCharStringForRange: "F",
+            description: "Work with Codex"
+        ))
+        // Even if user placed cursor back at index 0 of their real draft:
+        XCTAssertFalse(AXEngine.isPlaceholderValue(
+            "Fix the bug in AXEngine",
+            selectedRange: NSRange(location: 0, length: 0),
+            placeholderValue: "Work with Codex",
+            numberOfCharacters: 23,
+            firstCharStringForRange: "F",
+            description: "Work with Codex"
+        ))
+    }
 }
 
 // MARK: - Simulated Slack / Chromium Rich-Text List AXUIElement Accessor

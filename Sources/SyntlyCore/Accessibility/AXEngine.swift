@@ -402,10 +402,11 @@ public final class AXEngine {
 
         lastFocusedElement = element
 
-        let fullText = prefetchedValue ?? copyStringAttribute(element, attribute: kAXValueAttribute) ?? ""
+        let rawFullText = prefetchedValue ?? copyStringAttribute(element, attribute: kAXValueAttribute) ?? ""
         let selectedRange = copyRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute)
-        // Skip kAXSelectedTextAttribute IPC completely during normal typing when selection length == 0
-        let selectedText: String? = (selectedRange == nil || selectedRange!.length > 0)
+        let fullText = isPlaceholderText(rawFullText, for: element, selectedRange: selectedRange) ? "" : rawFullText
+        // Skip kAXSelectedTextAttribute IPC completely when empty/placeholder or selection length == 0
+        let selectedText: String? = (!fullText.isEmpty && (selectedRange == nil || selectedRange!.length > 0))
             ? copyStringAttribute(element, attribute: kAXSelectedTextAttribute)
             : nil
         let anchorPoint = resolveAnchorAppKitPoint(for: element, selectedRange: selectedRange)
@@ -1339,6 +1340,220 @@ public final class AXEngine {
                 }
             }
         }
+    }
+
+    // MARK: - Placeholder Text Detection
+
+    private static let emptyPlaceholderDOMClasses: Set<String> = [
+        "placeholder",
+        "is-empty",
+        "is-editor-empty",
+        "ql-blank",
+        "prosemirror-placeholder",
+        "drafteditor-placeholder",
+        "cm-placeholder"
+    ]
+
+    /// Pure decision helper determining whether `rawText` read from `kAXValueAttribute` is actually
+    /// placeholder text rather than user-typed content.
+    public static func isPlaceholderValue(
+        _ rawText: String,
+        selectedRange: NSRange?,
+        placeholderValue: String? = nil,
+        parentPlaceholderValue: String? = nil,
+        childPlaceholderValue: String? = nil,
+        numberOfCharacters: Int? = nil,
+        firstCharStringForRange: String? = nil,
+        description: String? = nil,
+        title: String? = nil,
+        help: String? = nil,
+        parentDescription: String? = nil,
+        parentTitle: String? = nil,
+        domClasses: [String] = [],
+        childDomClasses: [String] = [],
+        siblingStaticTexts: [String] = []
+    ) -> Bool {
+        let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 200 else {
+            return false
+        }
+
+        func matchesTrimmed(_ candidate: String?) -> Bool {
+            guard let candidate = candidate else { return false }
+            let cTrimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cTrimmed.isEmpty else { return false }
+            return typographicallyEqual(trimmed, cTrimmed)
+        }
+
+        // 1. Explicit AXPlaceholderValue match on element, immediate parent, or first child
+        if matchesTrimmed(placeholderValue) || matchesTrimmed(parentPlaceholderValue) || matchesTrimmed(childPlaceholderValue) {
+            return true
+        }
+
+        // Secondary checks only fire when the caret has not moved past index 0 (or is nil)
+        // so active typing or real user drafts are never falsely suppressed.
+        let isCaretAtZeroOrNil = (selectedRange == nil) || (selectedRange!.location == 0 && selectedRange!.length == 0)
+        guard isCaretAtZeroOrNil else {
+            return false
+        }
+
+        // 2. Backing text storage explicitly reports 0 characters while AXValue is non-empty
+        if let numChars = numberOfCharacters, numChars == 0 {
+            return true
+        }
+
+        // 3. Backing range {0, 1} explicitly succeeded with an empty string
+        if let firstChar = firstCharStringForRange, firstChar.isEmpty {
+            return true
+        }
+
+        // 4. AXDescription / AXTitle / AXHelp verbatim match when caret is untouched at 0
+        if matchesTrimmed(description) || matchesTrimmed(title) || matchesTrimmed(help) ||
+            matchesTrimmed(parentDescription) || matchesTrimmed(parentTitle) {
+            return true
+        }
+
+        // 5. Web / Electron rich-text editors (ProseMirror, TipTap, Quill, Slate, CodeMirror)
+        // expose explicit empty-editor placeholder CSS classes on the element or its placeholder child
+        for cls in domClasses + childDomClasses {
+            if emptyPlaceholderDOMClasses.contains(cls.lowercased()) {
+                return true
+            }
+        }
+
+        // 6. SwiftUI ZStack / AppKit sibling AXStaticText placeholder overlay with exact single-line text
+        if trimmed.count <= 120 && !trimmed.contains("\n") {
+            for siblingText in siblingStaticTexts {
+                if matchesTrimmed(siblingText) {
+                    return true
+                }
+            }
+        }
+
+        return false
+    }
+
+    private func isPlaceholderText(_ rawText: String, for element: AXUIElement, selectedRange: NSRange?) -> Bool {
+        let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 200 else {
+            return false
+        }
+
+        // Fast check #1: direct AXPlaceholderValue on the focused element
+        let directPlaceholder = copyStringAttribute(element, attribute: kAXPlaceholderValueAttribute)
+        if Self.isPlaceholderValue(rawText, selectedRange: selectedRange, placeholderValue: directPlaceholder) {
+            return true
+        }
+
+        // Only inspect deeper AX metadata when caret is at {0, 0} or nil (zero overhead while actively typing!)
+        let isCaretAtZeroOrNil = (selectedRange == nil) || (selectedRange!.location == 0 && selectedRange!.length == 0)
+        guard isCaretAtZeroOrNil else {
+            return false
+        }
+
+        let numChars = copyIntAttribute(element, attribute: kAXNumberOfCharactersAttribute)
+        let firstChar = copyFirstCharStringForRange(element)
+        let desc = copyStringAttribute(element, attribute: kAXDescriptionAttribute)
+        let title = copyStringAttribute(element, attribute: kAXTitleAttribute)
+        let help = copyStringAttribute(element, attribute: kAXHelpAttribute)
+        let domClasses = copyStringArrayAttribute(element, attribute: "AXDOMClassList")
+
+        var parentPlaceholder: String?
+        var parentDesc: String?
+        var parentTitle: String?
+        var siblingStaticTexts: [String] = []
+
+        if let parent = copyElementAttribute(element, attribute: kAXParentAttribute) {
+            parentPlaceholder = copyStringAttribute(parent, attribute: kAXPlaceholderValueAttribute)
+            parentDesc = copyStringAttribute(parent, attribute: kAXDescriptionAttribute)
+            parentTitle = copyStringAttribute(parent, attribute: kAXTitleAttribute)
+
+            if trimmed.count <= 120 && !trimmed.contains("\n") {
+                let siblings = copyChildrenAttribute(parent)
+                for sibling in siblings.prefix(8) {
+                    if CFEqual(sibling, element) { continue }
+                    if copyStringAttribute(sibling, attribute: kAXRoleAttribute) == (kAXStaticTextRole as String),
+                       let sibVal = copyStringAttribute(sibling, attribute: kAXValueAttribute) {
+                        siblingStaticTexts.append(sibVal)
+                    }
+                }
+            }
+        }
+
+        var childPlaceholder: String?
+        var childDomClasses: [String] = []
+        let children = copyChildrenAttribute(element)
+        if children.count <= 2, let firstChild = children.first {
+            childPlaceholder = copyStringAttribute(firstChild, attribute: kAXPlaceholderValueAttribute)
+            childDomClasses = copyStringArrayAttribute(firstChild, attribute: "AXDOMClassList")
+        }
+
+        return Self.isPlaceholderValue(
+            rawText,
+            selectedRange: selectedRange,
+            placeholderValue: directPlaceholder,
+            parentPlaceholderValue: parentPlaceholder,
+            childPlaceholderValue: childPlaceholder,
+            numberOfCharacters: numChars,
+            firstCharStringForRange: firstChar,
+            description: desc,
+            title: title,
+            help: help,
+            parentDescription: parentDesc,
+            parentTitle: parentTitle,
+            domClasses: domClasses,
+            childDomClasses: childDomClasses,
+            siblingStaticTexts: siblingStaticTexts
+        )
+    }
+
+    private func copyIntAttribute(_ element: AXUIElement, attribute: String) -> Int? {
+        guard elementAccessor == nil else { return nil }
+        var valueRef: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(element, attribute as CFString, &valueRef)
+        guard err == .success, let num = valueRef as? NSNumber else { return nil }
+        return num.intValue
+    }
+
+    private func copyStringArrayAttribute(_ element: AXUIElement, attribute: String) -> [String] {
+        guard elementAccessor == nil else { return [] }
+        var valueRef: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(element, attribute as CFString, &valueRef)
+        guard err == .success, let arr = valueRef as? [String] else { return [] }
+        return arr
+    }
+
+    private func copyElementAttribute(_ element: AXUIElement, attribute: String) -> AXUIElement? {
+        guard elementAccessor == nil else { return nil }
+        var valueRef: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(element, attribute as CFString, &valueRef)
+        guard err == .success, let ref = valueRef else { return nil }
+        return (ref as! AXUIElement)
+    }
+
+    private func copyChildrenAttribute(_ element: AXUIElement) -> [AXUIElement] {
+        guard elementAccessor == nil else { return [] }
+        var valueRef: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &valueRef)
+        guard err == .success, let arr = valueRef as? [AXUIElement] else { return [] }
+        return arr
+    }
+
+    private func copyFirstCharStringForRange(_ element: AXUIElement) -> String? {
+        guard elementAccessor == nil else { return nil }
+        var cfRange = CFRange(location: 0, length: 1)
+        guard let rangeVal = AXValueCreate(.cfRange, &cfRange) else { return nil }
+        var strRef: CFTypeRef?
+        let err = AXUIElementCopyParameterizedAttributeValue(
+            element,
+            kAXStringForRangeParameterizedAttribute as CFString,
+            rangeVal,
+            &strRef
+        )
+        guard err == .success, let val = strRef else { return nil }
+        if let str = val as? String { return str }
+        if let attr = val as? NSAttributedString { return attr.string }
+        return nil
     }
 
     // MARK: - Attribute & Coordinate Helpers
