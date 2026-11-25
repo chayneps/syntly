@@ -153,9 +153,10 @@ public final class AXEngine {
     private var lastFocusedElement: AXUIElement?
     private var workspaceTokens: [NSObjectProtocol] = []
     private var trustPollTimer: Timer?
-    private var enabledElectronPIDs = Set<pid_t>()
+    private var pendingHydrationWorkItems: [DispatchWorkItem] = []
     private var pendingPollWorkItem: DispatchWorkItem?
     private var lastEmittedContext: FocusedTextContext?
+    private var lastChromiumWakeTime: CFAbsoluteTime = 0
     public private(set) var isApplyingReplacement: Bool = false
 
     public init() {}
@@ -210,8 +211,27 @@ public final class AXEngine {
             guard let self = self else { return }
             let wasTrusted = self.isTrusted
             let nowTrusted = self.checkTrust(prompt: false)
-            if !wasTrusted && nowTrusted, let frontApp = NSWorkspace.shared.frontmostApplication {
+            guard nowTrusted, let frontApp = NSWorkspace.shared.frontmostApplication else { return }
+
+            if !wasTrusted {
                 self.attachToApplication(frontApp)
+                return
+            }
+
+            let pid = frontApp.processIdentifier
+            guard pid > 0, pid != ProcessInfo.processInfo.processIdentifier else { return }
+
+            // Keep Chromium / Electron web content accessibility awake!
+            // Chrome 116+ AutoDisableAccessibility turns off Blink renderer AX trees during video playback or idle scrolling
+            // while top-Chrome UI (Omnibox) remains active. Refreshing AXEnhancedUserInterface prevents renderer AX sleep.
+            if Self.isChromiumOrElectronApp(bundleID: frontApp.bundleIdentifier, appName: frontApp.localizedName) {
+                let wasEnhanced = self.isEnhancedUserInterfaceEnabled(pid: pid)
+                self.enableElectronAccessibility(pid: pid)
+                if self.observedPID != pid || self.currentObserver == nil {
+                    self.attachToApplication(frontApp)
+                } else if !wasEnhanced || self.lastEmittedContext == nil {
+                    self.pollCurrentFocusedElement()
+                }
             }
         }
     }
@@ -242,8 +262,14 @@ public final class AXEngine {
 
         guard checkTrust(prompt: false) else { return }
 
-        // Enable Electron / Chromium accessibility DOM tree if not yet enabled for this PID
-        enableElectronAccessibilityIfNeeded(pid: pid)
+        // Always assert Electron / Chromium accessibility DOM tree flags on app activation
+        // (Chrome can auto-disable web renderer accessibility after idle/video playback even for the same PID).
+        let isChromiumApp = Self.isChromiumOrElectronApp(bundleID: app.bundleIdentifier, appName: app.localizedName)
+        let wasEnhanced = isChromiumApp ? isEnhancedUserInterfaceEnabled(pid: pid) : true
+        enableElectronAccessibility(pid: pid)
+        if isChromiumApp && !wasEnhanced {
+            scheduleHydrationPolls()
+        }
 
         if observedPID == pid, currentObserver != nil {
             pollCurrentFocusedElement()
@@ -297,6 +323,8 @@ public final class AXEngine {
     private func detachObserver() {
         pendingPollWorkItem?.cancel()
         pendingPollWorkItem = nil
+        for item in pendingHydrationWorkItems { item.cancel() }
+        pendingHydrationWorkItems.removeAll()
         lastEmittedContext = nil
         if let observer = currentObserver {
             CFRunLoopRemoveSource(
@@ -309,13 +337,45 @@ public final class AXEngine {
         observedPID = 0
     }
 
-    private func enableElectronAccessibilityIfNeeded(pid: pid_t) {
-        guard !enabledElectronPIDs.contains(pid) else { return }
-        enabledElectronPIDs.insert(pid)
+    private func isEnhancedUserInterfaceEnabled(pid: pid_t) -> Bool {
+        let axApp = AXUIElementCreateApplication(pid)
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, "AXEnhancedUserInterface" as CFString, &ref) == .success,
+              let boolVal = ref as? Bool else {
+            return false
+        }
+        return boolVal
+    }
 
+    private func enableElectronAccessibility(pid: pid_t) {
         let axApp = AXUIElementCreateApplication(pid)
         AXUIElementSetAttributeValue(axApp, "AXManualAccessibility" as CFString, kCFBooleanTrue)
         AXUIElementSetAttributeValue(axApp, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+    }
+
+    private func scheduleHydrationPolls() {
+        for item in pendingHydrationWorkItems { item.cancel() }
+        pendingHydrationWorkItems.removeAll()
+        for delay in [0.15, 0.45] {
+            let item = DispatchWorkItem { [weak self] in
+                self?.pollCurrentFocusedElement()
+            }
+            pendingHydrationWorkItems.append(item)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+        }
+    }
+
+    private func wakeChromiumAccessibilityIfNeeded(for app: NSRunningApplication) {
+        guard Self.isChromiumOrElectronApp(bundleID: app.bundleIdentifier, appName: app.localizedName) else {
+            return
+        }
+        let pid = app.processIdentifier
+        let now = CFAbsoluteTimeGetCurrent()
+        if !isEnhancedUserInterfaceEnabled(pid: pid) || (now - lastChromiumWakeTime) > 1.5 {
+            lastChromiumWakeTime = now
+            enableElectronAccessibility(pid: pid)
+            scheduleHydrationPolls()
+        }
     }
 
     private func handleAXNotification(_ notification: String) {
@@ -359,21 +419,37 @@ public final class AXEngine {
             return
         }
 
-        let systemWide = AXUIElementCreateSystemWide()
-        var focusedRef: CFTypeRef?
-        let err = AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedRef)
-
-        guard err == .success, let elementRef = focusedRef else {
+        guard let rawElement = copyFocusedElement(for: frontApp.processIdentifier) else {
+            wakeChromiumAccessibilityIfNeeded(for: frontApp)
             lastEmittedContext = nil
             delegate?.axEngineDidUpdateContext(nil)
             return
         }
 
-        var element = elementRef as! AXUIElement
+        var element = rawElement
+        let drillableContainerRoles: Set<String> = [
+            kAXApplicationRole as String,
+            kAXWindowRole as String,
+            kAXSheetRole as String,
+            kAXDrawerRole as String,
+            kAXScrollAreaRole as String,
+            kAXSplitGroupRole as String,
+            kAXTabGroupRole as String,
+            "AXWebArea",
+            "AXGroup"
+        ]
 
-        // In web areas, split groups, and composite controls, drill down to find the innermost focused text input
+        // Drill down through container elements to find the innermost focused input,
+        // remembering any editable ancestor so drilling into an inner span/leaf never loses editability.
+        var fallbackEditableAncestor: AXUIElement?
         var drillDepth = 0
-        while drillDepth < 5 {
+        while drillDepth < 6 {
+            let role = copyStringAttribute(element, attribute: kAXRoleAttribute) ?? ""
+            guard drillableContainerRoles.contains(role) else { break }
+            var dummyPrefetch: String?
+            if isEditableTextElement(element, prefetchedValue: &dummyPrefetch) && role != "AXWebArea" {
+                fallbackEditableAncestor = element
+            }
             var innerFocusedRef: CFTypeRef?
             if AXUIElementCopyAttributeValue(element, kAXFocusedUIElementAttribute as CFString, &innerFocusedRef) == .success,
                let innerRef = innerFocusedRef {
@@ -386,6 +462,17 @@ public final class AXEngine {
             }
         }
 
+        // In Chromium / WebKit web content (e.g. YouTube #contenteditable-root, Gmail, Notion, ProseMirror),
+        // focus may sit on an inner paragraph/span/AXGenericContainer; climb to the root editable DOM element.
+        var isConfirmedEditableRoot = false
+        if let highestEditable = copyElementAttribute(element, attribute: "AXHighestEditableAncestor") {
+            element = highestEditable
+            isConfirmedEditableRoot = true
+        } else if let editableAncestor = copyElementAttribute(element, attribute: "AXEditableAncestor") {
+            element = editableAncestor
+            isConfirmedEditableRoot = true
+        }
+
         // Security guardrail: Never inspect password / secure text fields
         if isSecureTextField(element) {
             lastEmittedContext = nil
@@ -394,15 +481,28 @@ public final class AXEngine {
         }
 
         var prefetchedValue: String?
-        guard isEditableTextElement(element, prefetchedValue: &prefetchedValue) else {
-            lastEmittedContext = nil
-            delegate?.axEngineDidUpdateContext(nil)
-            return
+        if !isConfirmedEditableRoot && !isEditableTextElement(element, prefetchedValue: &prefetchedValue) {
+            if let fallback = fallbackEditableAncestor,
+               !isSecureTextField(fallback),
+               isEditableTextElement(fallback, prefetchedValue: &prefetchedValue) {
+                element = fallback
+            } else {
+                // If Chrome's web accessibility tree was asleep (returning only an unhydrated window/group)
+                // or a dynamic web input (like YouTube's comment box) is mid-mount, wake & re-poll shortly.
+                wakeChromiumAccessibilityIfNeeded(for: frontApp)
+                lastEmittedContext = nil
+                delegate?.axEngineDidUpdateContext(nil)
+                return
+            }
         }
 
         lastFocusedElement = element
 
-        let rawFullText = prefetchedValue ?? copyStringAttribute(element, attribute: kAXValueAttribute) ?? ""
+        let rawFullText = readElementFullText(
+            element,
+            prefetchedValue: prefetchedValue,
+            isConfirmedEditableRoot: isConfirmedEditableRoot
+        )
         let selectedRange = copyRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute)
         let fullText = isPlaceholderText(rawFullText, for: element, selectedRange: selectedRange) ? "" : rawFullText
         // Skip kAXSelectedTextAttribute IPC completely when empty/placeholder or selection length == 0
@@ -1011,7 +1111,12 @@ public final class AXEngine {
         }
 
         // Compute current range of `issue.original` in the live element text
-        let liveAX = copyStringAttribute(element, attribute: kAXValueAttribute)
+        let liveAX: String? = elementAccessor != nil
+            ? copyStringAttribute(element, attribute: kAXValueAttribute)
+            : {
+                let text = readElementFullText(element, prefetchedValue: nil, isConfirmedEditableRoot: true)
+                return text.isEmpty ? nil : text
+            }()
         let liveText: String
         if let axText = liveAX, axText.contains(issue.original) {
             liveText = axText
@@ -1176,7 +1281,10 @@ public final class AXEngine {
             // In Chromium/Electron, ensure text is selected before pasting
             let selRange = copyRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute)
             if selRange == nil || selRange?.length == 0 {
-                if let liveText = copyStringAttribute(element, attribute: kAXValueAttribute) {
+                let liveText = elementAccessor != nil
+                    ? (copyStringAttribute(element, attribute: kAXValueAttribute) ?? "")
+                    : readElementFullText(element, prefetchedValue: nil, isConfirmedEditableRoot: true)
+                if !liveText.isEmpty {
                     let fullRange = NSRange(location: 0, length: (liveText as NSString).length)
                     _ = setRangeAttribute(element, attribute: kAXSelectedTextRangeAttribute, range: fullRange)
                 }
@@ -1222,11 +1330,12 @@ public final class AXEngine {
         let bid = (bundleID ?? "").lowercased()
         let name = (appName ?? "").lowercased()
 
-        if bid.contains("chrome") || bid.contains("antigravity") || bid.contains("electron") ||
+        if bid.contains("chrome") || bid.contains("chromium") || bid.contains("antigravity") || bid.contains("electron") ||
            bid.contains("slack") || bid.contains("vscode") || bid.contains("code") ||
            bid.contains("brave") || bid.contains("edge") || bid.contains("discord") ||
-           bid.contains("notion") || bid.contains("cursor") ||
-           name.contains("chrome") || name.contains("antigravity") {
+           bid.contains("notion") || bid.contains("cursor") || bid.contains("arc") ||
+           bid.contains("vivaldi") || bid.contains("opera") ||
+           name.contains("chrome") || name.contains("chromium") || name.contains("antigravity") || name.contains("brave") {
             return true
         }
         return false
@@ -1362,15 +1471,14 @@ public final class AXEngine {
         placeholderValue: String? = nil,
         parentPlaceholderValue: String? = nil,
         childPlaceholderValue: String? = nil,
-        numberOfCharacters: Int? = nil,
-        firstCharStringForRange: String? = nil,
         description: String? = nil,
         title: String? = nil,
         help: String? = nil,
         parentDescription: String? = nil,
         parentTitle: String? = nil,
         domClasses: [String] = [],
-        childDomClasses: [String] = [],
+        singleChildDomClasses: [String] = [],
+        singleChildText: String? = nil,
         siblingStaticTexts: [String] = []
     ) -> Bool {
         let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1397,31 +1505,32 @@ public final class AXEngine {
             return false
         }
 
-        // 2. Backing text storage explicitly reports 0 characters while AXValue is non-empty
-        if let numChars = numberOfCharacters, numChars == 0 {
-            return true
-        }
-
-        // 3. Backing range {0, 1} explicitly succeeded with an empty string
-        if let firstChar = firstCharStringForRange, firstChar.isEmpty {
-            return true
-        }
-
-        // 4. AXDescription / AXTitle / AXHelp verbatim match when caret is untouched at 0
+        // 2. AXDescription / AXTitle / AXHelp verbatim match when caret is untouched at 0
+        // (Safe even when selectedRange is nil in web inputs because it requires exact text equality with the field's label)
         if matchesTrimmed(description) || matchesTrimmed(title) || matchesTrimmed(help) ||
             matchesTrimmed(parentDescription) || matchesTrimmed(parentTitle) {
             return true
         }
 
-        // 5. Web / Electron rich-text editors (ProseMirror, TipTap, Quill, Slate, CodeMirror)
-        // expose explicit empty-editor placeholder CSS classes on the element or its placeholder child
-        for cls in domClasses + childDomClasses {
-            if emptyPlaceholderDOMClasses.contains(cls.lowercased()) {
-                return true
+        // 3. Web / Electron rich-text editors (ProseMirror, TipTap, Quill, Slate, CodeMirror)
+        // Only match when caret is explicitly reported at {0, 0} (never when selectedRange is unsupported/nil),
+        // and for a child node only when it is the sole child and its own text matches `rawText` (or is empty ::before).
+        if let sel = selectedRange, sel.location == 0 && sel.length == 0 {
+            for cls in domClasses {
+                if emptyPlaceholderDOMClasses.contains(cls.lowercased()) {
+                    return true
+                }
+            }
+            if singleChildText == nil || singleChildText!.isEmpty || matchesTrimmed(singleChildText) {
+                for cls in singleChildDomClasses {
+                    if emptyPlaceholderDOMClasses.contains(cls.lowercased()) {
+                        return true
+                    }
+                }
             }
         }
 
-        // 6. SwiftUI ZStack / AppKit sibling AXStaticText placeholder overlay with exact single-line text
+        // 4. SwiftUI ZStack / AppKit sibling AXStaticText placeholder overlay with exact single-line text match
         if trimmed.count <= 120 && !trimmed.contains("\n") {
             for siblingText in siblingStaticTexts {
                 if matchesTrimmed(siblingText) {
@@ -1451,8 +1560,6 @@ public final class AXEngine {
             return false
         }
 
-        let numChars = copyIntAttribute(element, attribute: kAXNumberOfCharactersAttribute)
-        let firstChar = copyFirstCharStringForRange(element)
         let desc = copyStringAttribute(element, attribute: kAXDescriptionAttribute)
         let title = copyStringAttribute(element, attribute: kAXTitleAttribute)
         let help = copyStringAttribute(element, attribute: kAXHelpAttribute)
@@ -1481,11 +1588,15 @@ public final class AXEngine {
         }
 
         var childPlaceholder: String?
-        var childDomClasses: [String] = []
+        var singleChildDomClasses: [String] = []
+        var singleChildText: String?
         let children = copyChildrenAttribute(element)
-        if children.count <= 2, let firstChild = children.first {
+        if let firstChild = children.first {
             childPlaceholder = copyStringAttribute(firstChild, attribute: kAXPlaceholderValueAttribute)
-            childDomClasses = copyStringArrayAttribute(firstChild, attribute: "AXDOMClassList")
+            if children.count == 1 {
+                singleChildDomClasses = copyStringArrayAttribute(firstChild, attribute: "AXDOMClassList")
+                singleChildText = copyStringAttribute(firstChild, attribute: kAXValueAttribute)
+            }
         }
 
         return Self.isPlaceholderValue(
@@ -1494,25 +1605,16 @@ public final class AXEngine {
             placeholderValue: directPlaceholder,
             parentPlaceholderValue: parentPlaceholder,
             childPlaceholderValue: childPlaceholder,
-            numberOfCharacters: numChars,
-            firstCharStringForRange: firstChar,
             description: desc,
             title: title,
             help: help,
             parentDescription: parentDesc,
             parentTitle: parentTitle,
             domClasses: domClasses,
-            childDomClasses: childDomClasses,
+            singleChildDomClasses: singleChildDomClasses,
+            singleChildText: singleChildText,
             siblingStaticTexts: siblingStaticTexts
         )
-    }
-
-    private func copyIntAttribute(_ element: AXUIElement, attribute: String) -> Int? {
-        guard elementAccessor == nil else { return nil }
-        var valueRef: CFTypeRef?
-        let err = AXUIElementCopyAttributeValue(element, attribute as CFString, &valueRef)
-        guard err == .success, let num = valueRef as? NSNumber else { return nil }
-        return num.intValue
     }
 
     private func copyStringArrayAttribute(_ element: AXUIElement, attribute: String) -> [String] {
@@ -1539,23 +1641,6 @@ public final class AXEngine {
         return arr
     }
 
-    private func copyFirstCharStringForRange(_ element: AXUIElement) -> String? {
-        guard elementAccessor == nil else { return nil }
-        var cfRange = CFRange(location: 0, length: 1)
-        guard let rangeVal = AXValueCreate(.cfRange, &cfRange) else { return nil }
-        var strRef: CFTypeRef?
-        let err = AXUIElementCopyParameterizedAttributeValue(
-            element,
-            kAXStringForRangeParameterizedAttribute as CFString,
-            rangeVal,
-            &strRef
-        )
-        guard err == .success, let val = strRef else { return nil }
-        if let str = val as? String { return str }
-        if let attr = val as? NSAttributedString { return attr.string }
-        return nil
-    }
-
     // MARK: - Attribute & Coordinate Helpers
 
     private func isSecureTextField(_ element: AXUIElement) -> Bool {
@@ -1564,6 +1649,33 @@ public final class AXEngine {
             return true
         }
         return false
+    }
+
+    private func copyFocusedElement(for pid: pid_t) -> AXUIElement? {
+        let systemWide = AXUIElementCreateSystemWide()
+        var focusedRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
+           let ref = focusedRef {
+            return (ref as! AXUIElement)
+        }
+
+        // Fallback directly to application AXUIElement and focused window (reliable across Chrome restarts/helpers)
+        let appElement = AXUIElementCreateApplication(pid)
+        if AXUIElementCopyAttributeValue(appElement, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
+           let ref = focusedRef {
+            return (ref as! AXUIElement)
+        }
+
+        var winRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
+           let wRef = winRef {
+            let winElement = wRef as! AXUIElement
+            if AXUIElementCopyAttributeValue(winElement, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
+               let ref = focusedRef {
+                return (ref as! AXUIElement)
+            }
+        }
+        return nil
     }
 
     private func isEditableTextElement(_ element: AXUIElement, prefetchedValue: inout String?) -> Bool {
@@ -1579,21 +1691,101 @@ public final class AXEngine {
             return true
         }
 
-        let role = copyStringAttribute(element, attribute: kAXRoleAttribute) ?? ""
-        let editableRoles: Set<String> = [
-            kAXTextAreaRole as String,
-            kAXTextFieldRole as String,
-            kAXComboBoxRole as String,
-            "AXWebArea",
-            "AXGroup"
-        ]
-
-        if editableRoles.contains(role), let val = copyStringAttribute(element, attribute: kAXValueAttribute) {
-            prefetchedValue = val
+        // In Chromium (Blink) and Safari (WebKit), every <input>, <textarea>, and <div contenteditable="true">
+        // (such as YouTube comments, Gmail compose, Notion, Lexical, ProseMirror) exposes AXEditableAncestor.
+        if copyElementAttribute(element, attribute: "AXEditableAncestor") != nil ||
+           copyElementAttribute(element, attribute: "AXHighestEditableAncestor") != nil {
             return true
         }
 
+        let role = copyStringAttribute(element, attribute: kAXRoleAttribute) ?? ""
+        let dedicatedTextRoles: Set<String> = [
+            kAXTextAreaRole as String,
+            kAXTextFieldRole as String,
+            kAXComboBoxRole as String,
+            "AXSearchField"
+        ]
+
+        if dedicatedTextRoles.contains(role) {
+            if let val = copyStringAttribute(element, attribute: kAXValueAttribute) {
+                prefetchedValue = val
+                return true
+            }
+            var isRangeSettable = DarwinBoolean(false)
+            AXUIElementIsAttributeSettable(element, kAXSelectedTextRangeAttribute as CFString, &isRangeSettable)
+            if isRangeSettable.boolValue {
+                return true
+            }
+        }
+
+        if role == "AXGroup" || role == "AXGenericContainer" || role == "AXWebArea" {
+            var isRangeSettable = DarwinBoolean(false)
+            AXUIElementIsAttributeSettable(element, kAXSelectedTextRangeAttribute as CFString, &isRangeSettable)
+            if isRangeSettable.boolValue && role != "AXWebArea",
+               let val = copyStringAttribute(element, attribute: kAXValueAttribute) {
+                prefetchedValue = val
+                return true
+            }
+        }
+
         return false
+    }
+
+    /// Reads text from `kAXValueAttribute`, falling back to aggregating descendant `AXStaticText` nodes
+    /// for Chromium/WebKit `contenteditable` containers (`AXGenericContainer` / `AXGroup`) whose `kAXValueAttribute` is nil.
+    private func readElementFullText(
+        _ element: AXUIElement,
+        prefetchedValue: String?,
+        isConfirmedEditableRoot: Bool = false
+    ) -> String {
+        if let prefetched = prefetchedValue, !prefetched.isEmpty {
+            return prefetched
+        }
+        if let direct = copyStringAttribute(element, attribute: kAXValueAttribute), !direct.isEmpty {
+            return direct
+        }
+        // Only walk children for web contenteditable elements when direct kAXValueAttribute was nil/empty
+        guard isConfirmedEditableRoot ||
+              copyElementAttribute(element, attribute: "AXEditableAncestor") != nil ||
+              copyElementAttribute(element, attribute: "AXHighestEditableAncestor") != nil else {
+            return prefetchedValue ?? ""
+        }
+
+        var parts: [String] = []
+        var visited = 0
+        let blockRoles: Set<String> = ["AXParagraph", "AXGroup", "AXGenericContainer", "AXHeading", "AXListItem"]
+
+        func collectText(_ node: AXUIElement, depth: Int) {
+            guard depth <= 8, visited < 256 else { return }
+            visited += 1
+            let role = copyStringAttribute(node, attribute: kAXRoleAttribute) ?? ""
+            if role == (kAXStaticTextRole as String) {
+                if let val = copyStringAttribute(node, attribute: kAXValueAttribute), !val.isEmpty {
+                    parts.append(val)
+                }
+                return
+            }
+            let children = copyChildrenAttribute(node)
+            if children.isEmpty {
+                if depth > 0, let val = copyStringAttribute(node, attribute: kAXValueAttribute), !val.isEmpty {
+                    parts.append(val)
+                }
+                return
+            }
+            let beforeCount = parts.count
+            for child in children {
+                collectText(child, depth: depth + 1)
+            }
+            if depth > 0 && blockRoles.contains(role) && parts.count > beforeCount {
+                parts.append("\n")
+            }
+        }
+
+        collectText(element, depth: 0)
+        while parts.last == "\n" {
+            parts.removeLast()
+        }
+        return parts.joined()
     }
 
     private func copyStringAttribute(_ element: AXUIElement, attribute: String) -> String? {
@@ -1652,6 +1844,16 @@ public final class AXEngine {
     public func resolveAnchorAppKitPoint(for element: AXUIElement, selectedRange: NSRange?) -> CGPoint {
         let primaryScreenHeight = NSScreen.screens.first?.frame.height ?? NSScreen.main?.frame.height ?? 1080
 
+        func clampToScreen(_ rawPoint: CGPoint) -> CGPoint {
+            if let screen = NSScreen.screens.first(where: { $0.frame.insetBy(dx: -80, dy: -80).contains(rawPoint) }) {
+                return CGPoint(
+                    x: max(screen.frame.minX + 20, rawPoint.x),
+                    y: max(screen.frame.minY + 40, rawPoint.y)
+                )
+            }
+            return CGPoint(x: max(20, rawPoint.x), y: max(40, rawPoint.y))
+        }
+
         // 1. Query element frame (position & size)
         var posRef: CFTypeRef?
         var sizeRef: CFTypeRef?
@@ -1681,7 +1883,7 @@ public final class AXEngine {
         if let point = elementPoint, let size = elementSize, size.width > 20, size.height > 10 {
             if size.height <= 400 {
                 let appKitTopY = primaryScreenHeight - point.y
-                return CGPoint(x: max(20, point.x), y: max(40, appKitTopY))
+                return clampToScreen(CGPoint(x: point.x, y: appKitTopY))
             }
         }
 
@@ -1701,16 +1903,16 @@ public final class AXEngine {
                 if err == .success, let bVal = boundsRef {
                     var rect = CGRect.zero
                     if AXValueGetValue(bVal as! AXValue, .cgRect, &rect),
-                       rect.origin.x > 0 || rect.origin.y > 0,
+                       rect.origin.x != 0 || rect.origin.y != 0,
                        rect.size.height > 2 {
                         let appKitTopY = primaryScreenHeight - rect.minY
                         let anchorX: CGFloat
-                        if let pt = elementPoint, pt.x > 0, pt.x <= rect.minX {
+                        if let pt = elementPoint, pt.x <= rect.minX {
                             anchorX = pt.x
                         } else {
-                            anchorX = max(20, rect.minX)
+                            anchorX = rect.minX
                         }
-                        return CGPoint(x: max(20, anchorX), y: max(40, appKitTopY))
+                        return clampToScreen(CGPoint(x: anchorX, y: appKitTopY))
                     }
                 }
             }
@@ -1719,11 +1921,11 @@ public final class AXEngine {
         // 3. Fallback to element frame if available
         if let point = elementPoint {
             let appKitTopY = primaryScreenHeight - point.y
-            return CGPoint(x: max(20, point.x), y: max(40, appKitTopY))
+            return clampToScreen(CGPoint(x: point.x, y: appKitTopY))
         }
 
         // 4. Fallback near mouse cursor or top-left of main screen
         let mouse = NSEvent.mouseLocation
-        return CGPoint(x: max(40, mouse.x - 24), y: max(40, mouse.y + 24))
+        return clampToScreen(CGPoint(x: mouse.x - 24, y: mouse.y + 24))
     }
 }

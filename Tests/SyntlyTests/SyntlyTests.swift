@@ -2003,21 +2003,7 @@ final class SyntlyEndToEndTests: XCTestCase {
             childPlaceholderValue: "Work with Codex"
         ))
 
-        // 3. AXNumberOfCharacters == 0 while AXValue leaks placeholder
-        XCTAssertTrue(AXEngine.isPlaceholderValue(
-            "Work with Codex",
-            selectedRange: NSRange(location: 0, length: 0),
-            numberOfCharacters: 0
-        ))
-
-        // 4. AXStringForRange({0, 1}) returns empty string ""
-        XCTAssertTrue(AXEngine.isPlaceholderValue(
-            "Work with Codex",
-            selectedRange: NSRange(location: 0, length: 0),
-            firstCharStringForRange: ""
-        ))
-
-        // 5. AXDescription / AXTitle matches when caret is untouched at 0, but NOT when user typed past 0
+        // 3. AXDescription / AXTitle matches when caret is untouched at 0, but NOT when user typed past 0
         XCTAssertTrue(AXEngine.isPlaceholderValue(
             "Work with Codex",
             selectedRange: NSRange(location: 0, length: 0),
@@ -2029,32 +2015,53 @@ final class SyntlyEndToEndTests: XCTestCase {
             description: "Work with Codex"
         ))
 
-        // 6. Web/Electron ProseMirror/TipTap/Quill empty placeholder CSS classes
+        // 4. Web/Electron ProseMirror/TipTap/Quill empty placeholder CSS classes:
+        // Matches ONLY when caret is explicitly {0, 0} and child text is empty or matches rawText
         XCTAssertTrue(AXEngine.isPlaceholderValue(
             "Work with Codex",
             selectedRange: NSRange(location: 0, length: 0),
-            childDomClasses: ["placeholder", "is-empty"]
+            singleChildDomClasses: ["placeholder", "is-empty"],
+            singleChildText: "Work with Codex"
         ))
         XCTAssertFalse(AXEngine.isPlaceholderValue(
             "Work with Codex",
             selectedRange: NSRange(location: 15, length: 0),
-            childDomClasses: ["placeholder"]
+            singleChildDomClasses: ["placeholder"],
+            singleChildText: "Work with Codex"
         ))
 
-        // 7. SwiftUI ZStack sibling AXStaticText overlay when caret is at 0
+        // 5. Regression test for Chrome websites (e.g. YouTube comments "Somehow, this become meta"):
+        // Even if selectedRange is nil in a web component, or a hidden child has class "placeholder" ("Add a comment..."),
+        // real user-typed text MUST NEVER be suppressed!
+        XCTAssertFalse(AXEngine.isPlaceholderValue(
+            "Somehow, this become meta",
+            selectedRange: nil,
+            placeholderValue: "Add a comment...",
+            description: "Add a comment...",
+            singleChildDomClasses: ["placeholder"],
+            singleChildText: "Add a comment..."
+        ))
+        XCTAssertFalse(AXEngine.isPlaceholderValue(
+            "Somehow, this become meta",
+            selectedRange: NSRange(location: 0, length: 0),
+            placeholderValue: "Add a comment...",
+            description: "Add a comment...",
+            singleChildDomClasses: ["placeholder"],
+            singleChildText: "Add a comment..."
+        ))
+
+        // 6. SwiftUI ZStack sibling AXStaticText overlay when caret is at 0
         XCTAssertTrue(AXEngine.isPlaceholderValue(
             "Work with Codex",
             selectedRange: NSRange(location: 0, length: 0),
             siblingStaticTexts: ["Work with Codex"]
         ))
 
-        // 8. Real user-typed text (even when placeholderValue exists on the field) must NEVER be ignored
+        // 7. Real user-typed text (even when placeholderValue exists on the field) must NEVER be ignored
         XCTAssertFalse(AXEngine.isPlaceholderValue(
             "Fix the bug in AXEngine",
             selectedRange: NSRange(location: 23, length: 0),
             placeholderValue: "Work with Codex",
-            numberOfCharacters: 23,
-            firstCharStringForRange: "F",
             description: "Work with Codex"
         ))
         // Even if user placed cursor back at index 0 of their real draft:
@@ -2062,8 +2069,6 @@ final class SyntlyEndToEndTests: XCTestCase {
             "Fix the bug in AXEngine",
             selectedRange: NSRange(location: 0, length: 0),
             placeholderValue: "Work with Codex",
-            numberOfCharacters: 23,
-            firstCharStringForRange: "F",
             description: "Work with Codex"
         ))
     }

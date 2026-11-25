@@ -343,7 +343,7 @@ public final class FloatingPanelController: NSObject {
             return
         }
 
-        let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let screenFrame = Self.screenVisibleFrame(near: context.anchorAppKitPoint)
 
         // Default top-left positioning relative to the start of text:
         let bubbleSize: CGFloat = coordinator.settings.pillSize.panelSize
@@ -400,10 +400,17 @@ public final class FloatingPanelController: NSObject {
         }
     }
 
+    private static func screenVisibleFrame(near point: CGPoint) -> NSRect {
+        if let match = NSScreen.screens.first(where: { $0.frame.insetBy(dx: -80, dy: -80).contains(point) }) {
+            return match.visibleFrame
+        }
+        return NSScreen.main?.visibleFrame ?? NSScreen.screens.first?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+    }
+
     private func repositionDialogPanel(relativeTo pillOrigin: CGPoint) {
         guard let dialog = self.dialogPanel, let context = coordinator.currentContext else { return }
         let appKey = context.bundleID ?? context.appName
-        let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let screenFrame = Self.screenVisibleFrame(near: pillOrigin)
         let dialogSize = NSSize(width: 380, height: 348)
 
         var originX: CGFloat
